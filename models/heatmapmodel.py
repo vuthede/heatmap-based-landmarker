@@ -6,13 +6,13 @@ sys.path.insert(0,'..')
 from models.mobilenet import mobilenetv2
 from torchvision import transforms
 
-DEBUG = True
+DEBUG = False
 
 """
 \ Heatmap BxCxHxW to BxCx2
   Used when inference time
 """
-def heatmap2coord(heatmap, topk=9):
+def heatmap2coord(heatmap, topk=7):
     N, C, H, W = heatmap.shape
     score, index = heatmap.view(N,C,1,-1).topk(topk, dim=-1)
     coord = torch.cat([index%W, index//W], dim=2)
@@ -23,7 +23,7 @@ def heatmap2coord(heatmap, topk=9):
  Used when training model. After the decode step, we ave the heatmap 
  then we get only topk points in that and get softmax of those
 """
-def heatmap2topkheatmap(heatmap, topk=9):
+def heatmap2topkheatmap(heatmap, topk=7):
     """
     \ Find topk value in each heatmap and calculate softmax for them.
     \ Another non topk points will be zero.
@@ -36,6 +36,8 @@ def heatmap2topkheatmap(heatmap, topk=9):
     heatmap = heatmap.view(N,C,1,-1)
     score, index = heatmap.topk(topk, dim=-1)
     score = F.softmax(score, dim=-1)
+    # heatmap = F.softmax(heatmap, dim=-1)
+
 
     # Assign non-topk zero values
     # Assign topk with calculated softmax value
@@ -44,6 +46,22 @@ def heatmap2topkheatmap(heatmap, topk=9):
 
     # Reshape to the original size
     heatmap = res.view(N, C, H, W)
+    # heatmap = heatmap.view(N, C, H, W)
+
+
+    return heatmap
+
+def heatmap2softmaxheatmap(heatmap):
+    N, C, H, W = heatmap.shape
+   
+    # Get topk points in each heatmap
+    # And using softmax for those score
+    heatmap = heatmap.view(N,C,1,-1)
+    heatmap = F.softmax(heatmap, dim=-1)
+
+
+    # Reshape to the original size
+    heatmap = heatmap.view(N, C, H, W)
 
     return heatmap
 
@@ -154,9 +172,9 @@ class HeatmapHead(nn.Module):
         return binary_heats, lmks
         
 class HeatMapLandmarker(nn.Module):
-    def __init__(self, pretrained=True):
+    def __init__(self, pretrained=False, model_url=None):
         super(HeatMapLandmarker, self).__init__()
-        self.backbone = mobilenetv2(pretrained=pretrained, model_url=None)
+        self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
         self.heatmap_head = HeatmapHead()
         self.transform = transforms.Compose([
             transforms.Resize(256, 256),

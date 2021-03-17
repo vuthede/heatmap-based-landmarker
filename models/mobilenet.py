@@ -8,7 +8,7 @@ import torch.utils.model_zoo as model_zoo
 __all__ = ['MobileNetV2', 'mobilenetv2']
 
 
-DEBUG=True
+DEBUG=False
 
 class Block(nn.Module):
     """ 

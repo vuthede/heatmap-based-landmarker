@@ -46,11 +46,11 @@ def rotate(angle, center, landmark):
 class LAPA106DataSet(data.Dataset):
     TARGET_IMAGE_SIZE = (256, 256)
 
-    def __init__(self, img_dir, anno_dir, transforms=None):
+    def __init__(self, img_dir, anno_dir, augment=False, transforms=None):
         self.img_dir = img_dir
         self.anno_dir = anno_dir
         self.transforms = transforms
-
+        self.augment = augment
         self.img_path_list = glob.glob(img_dir + "/*.jpg")
 
         
@@ -113,6 +113,11 @@ class LAPA106DataSet(data.Dataset):
         assert (landmark_original <= 1).all(), str(landmark_original) + str([dx, dy])
         if self.transforms:
             imgT_original = self.transforms(imgT_original)
+        else:
+            imgT_original = np.array(imgT_original)
+
+        if not self.augment:
+            fail_augment = True
 
         # Random augmeentation rotate and scale
         fail_augment = False
@@ -128,10 +133,11 @@ class LAPA106DataSet(data.Dataset):
         landmark = (landmark - xy) / size
         landmark = np.reshape(landmark, (-1)).astype(np.float32)
 
-        if (landmark < 0).any() or (landmark > 1).any():
+        if (landmark < 0).any() or (landmark >= 1).any():
             fail_augment=True
 
         if fail_augment:
+            # print("yooooooooooooooooo")
             return imgT_original, landmark_original
 
         x1, y1 = xy
@@ -163,6 +169,9 @@ class LAPA106DataSet(data.Dataset):
 
         if self.transforms:
             imgT = self.transforms(imgT)
+        else:
+            imgT = np.array(imgT)
+
         
         return imgT, landmark
 
@@ -193,7 +202,8 @@ class LAPA106DataSet(data.Dataset):
 if __name__ == "__main__":
     import torch
 
-    transform = transforms.Compose([transforms.ToTensor()])
+    transform = transforms.Compose([transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
     lapa = LAPA106DataSet(img_dir="/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/images",
                             anno_dir="/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/landmarks",

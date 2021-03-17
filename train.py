@@ -10,8 +10,11 @@ from torch.utils import data
 from torch.utils.data import DataLoader
 import cv2
 import sys
-from models.heatmapmodel import HeatMapLandmarker
+from models.heatmapmodel import HeatMapLandmarker,\
+     heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, heatmap2softmaxheatmap
 from datasets.dataLAPA106 import LAPA106DataSet
+from torchvision import  transforms
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -34,6 +37,11 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
+# Transform
+transform = transforms.Compose([transforms.ToTensor(),
+                                transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
+
+
 
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
@@ -41,16 +49,53 @@ def save_checkpoint(state, filename='checkpoint.pth.tar'):
     print(f'Save checkpoint to {filename}')
 
 
-def train_one_epoch(traindataloader, model, optimizer, epoch):
+def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
     model.train()
     losses = AverageMeter()
     num_batch = len(traindataloader)
     i = 0
 
-    return 0
+    for img, lmksGT in traindataloader:
+        i += 1
+       
+        # img shape: B x 3 x 256 x 256
+        # NORMALZIED lmks shape: B x 106 x 256 x 256
+        img = img.to(device)
+
+        # Denormalize lmks
+        lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
+        lmksGT = lmksGT * 256  
+        
+        # Generate GT heatmap by randomized rounding
+        # print(lmksGT.shape)
+        heatGT = lmks2heatmap(lmksGT)  
+
+        # Inference model to generate heatmap
+        heatPRED, lmksPRED = model(img.to(device))
+
+        if (args.get_topk_in_pred_heats_training):
+            heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
+        else:
+            heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
+
+
+        # Loss
+        # print(heatTopKPRED.shape, heatGT.shape)
+
+        rme = loss_heatmap(heatPRED, heatGT)
+
+        optimizer.zero_grad()
+        rme.backward()
+        optimizer.step()
+
+        losses.update(rme.item())
+        print(f"Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {i} / {num_batch} batches. Loss: {rme.item()}")
+
+    return losses.avg
+
     
 
-def validate(valdataloader, model, epoch,optimizer, args):
+def validate(valdataloader, model, optimizer, epoch, args):
     if not os.path.isdir(args.snapshot):
         os.makedirs(args.snapshot)
 
@@ -60,11 +105,56 @@ def validate(valdataloader, model, epoch,optimizer, args):
 
     model.eval()
     losses = AverageMeter()
+    num_batch = len(valdataloader)
 
-    num_vis_batch = 40
+
+    num_vis_batch = 100
     batch = 0
+    for img, lmksGT in valdataloader:
+        img = np.array(img)
+        batch += 1
+        # img shape: B x  256 x 256 x3
+        # NORMALZIED lmks shape: B x 106 x 256 x 256
+        img_ori = img.copy()
+        new_img = []
+        for i in range(len(img)):
+            new_img.append(transform(img[i]).numpy())  #B x 3 x 256 x 256
+            print(transform(img[i]).shape)
+        img = torch.Tensor(np.array(new_img))
 
-    return 0
+        img = img.to(device)
+
+        # Denormalize lmks
+        lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
+        lmksGT = lmksGT * 256  
+        
+        # Generate GT heatmap by randomized rounding
+        # print(lmksGT.shape)
+        heatGT = lmks2heatmap(lmksGT)  
+
+        # Inference model to generate heatmap
+        heatPRED, lmksPRED = model(img.to(device))
+
+        if (args.get_topk_in_pred_heats_training):
+            heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
+        else:
+            heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
+
+        if batch < num_vis_batch:
+            vis_prediction_batch(batch, img_ori[0], lmksPRED[0])
+
+
+        # Loss
+        rme = loss_heatmap(heatPRED, heatGT)
+
+        losses.update(rme.item())
+        message = f"VAldiation Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {batch} / {num_batch} batches. Loss: {rme.item()}"
+        print(message)
+    
+    message = f" Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']}. Loss :{losses.avg}"
+    logFile.write(message + "\n")
+
+    return losses.avg
 
 
 ## Visualization
@@ -78,28 +168,30 @@ def draw_landmarks(img, lmks):
 
     return img
 
-def vis_prediction_batch(batch, imgs, lmks, output="./vis"):
+def vis_prediction_batch(batch, img, lmk, output="./vis"):
     """
-    \eye_imgs batchx1x64x64
-    \gaze_ears batchx3
+    \eye_imgs 256x256x3
+    \lmks 106x2
     """
     if not os.path.isdir(output):
         os.makedirs(output)
     
-   
+    img = draw_landmarks(img, lmk.cpu().detach().numpy())
 
-
+    cv2.imwrite(f'{output}/{batch}_.png', img)
+    
 
 
 def main(args):
     # Init model
-    model = HeatMapLandmarker(pretrained=False)
+    model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
     model.to(device)
 
   
 
     # Train dataset, valid dataset
-    train_dataset = LAPA106DataSet(img_dir=f'{args.dataroot}/images', anno_dir=f'{args.dataroot}/landmarks')
+    train_dataset = LAPA106DataSet(img_dir=f'{args.dataroot}/images', anno_dir=f'{args.dataroot}/landmarks', augment=True,
+    transforms=transform)
     val_dataset = LAPA106DataSet(img_dir=f'{args.val_dataroot}/images', anno_dir=f'{args.val_dataroot}/landmarks')
 
     # Dataloader
@@ -128,9 +220,12 @@ def main(args):
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=60 ,gamma=0.1)
     
+    # for im, lm in train_dataset:
+    #     print(type(im), lm.shape)
+
     for epoch in range(100000):
-        train_one_epoch(traindataloader, model, optimizer, epoch)
-        validate(validdataloader, model, epoch, optimizer,args)
+        train_one_epoch(traindataloader, model, optimizer, epoch, args)
+        validate(validdataloader, model, optimizer, epoch, args)
         save_checkpoint({
             'epoch': epoch,
             'plfd_backbone': model.state_dict()
@@ -164,6 +259,9 @@ def parse_args():
         metavar='PATH')
     parser.add_argument('--train_batchsize', default=16, type=int)
     parser.add_argument('--val_batchsize', default=8, type=int)
+    parser.add_argument('--get_topk_in_pred_heats_training', default=0, type=int)
+
+    
     args = parser.parse_args()
     return args
 

@@ -185,6 +185,14 @@ def vis_prediction_batch(batch, img, lmk, output="./vis"):
 def main(args):
     # Init model
     model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
+    
+    if args.resume == "":
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint['plfd_backbone'])
+        model.to(device)
+
+    
+    
     model.to(device)
 
   
@@ -263,6 +271,8 @@ def parse_args():
     parser.add_argument('--lr', default=0.001, type=float)
     parser.add_argument('--step_size', default=60, type=float)
     parser.add_argument('--gamma', default=0.1, type=float)
+    parser.add_argument('--resume', default="", type=str)
+
 
 
     

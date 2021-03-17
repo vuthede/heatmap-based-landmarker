@@ -215,10 +215,10 @@ def main(args):
         [{
             'params': model.parameters()
         }],
-        lr=0.001,
+        lr=args.lr,
         weight_decay=1e-6)
 
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=60 ,gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size ,gamma=args.gamma)
     
     # for im, lm in train_dataset:
     #     print(type(im), lm.shape)
@@ -260,6 +260,10 @@ def parse_args():
     parser.add_argument('--train_batchsize', default=16, type=int)
     parser.add_argument('--val_batchsize', default=8, type=int)
     parser.add_argument('--get_topk_in_pred_heats_training', default=0, type=int)
+    parser.add_argument('--lr', default=0.001, type=float)
+    parser.add_argument('--step_size', default=60, type=float)
+    parser.add_argument('--gamma', default=0.1, type=float)
+
 
     
     args = parser.parse_args()

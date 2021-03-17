@@ -15,7 +15,7 @@ DEBUG = False
 def heatmap2coord(heatmap, topk=7):
     N, C, H, W = heatmap.shape
     score, index = heatmap.view(N,C,1,-1).topk(topk, dim=-1)
-    coord = torch.cat([index//W, index%W], dim=2)
+    coord = torch.cat([index%W, index//W], dim=2)
     return (coord*F.softmax(score, dim=-1)).sum(-1)
 
 """
@@ -90,15 +90,15 @@ def coord2heatmap(w, h, ow, oh, x, y):
     heatmap = torch.zeros(ow, oh)
    
     
-    heatmap[nx][ny] = (1-ex) * (1-ey)
+    heatmap[ny][nx] = (1-ex) * (1-ey)
     if (ny+1<oh-1):
-        heatmap[nx][ny+1] = (1-ex) * ey
+        heatmap[ny+1][nx] = (1-ex) * ey
     
     if (nx+1<ow-1):
-        heatmap[nx+1][ny] = ex * (1-ey)
+        heatmap[ny][nx+1] = ex * (1-ey)
     
     if (nx+1<ow-1 and ny+1<oh-1):
-        heatmap[nx+1][ny+1] = ex * ey
+        heatmap[ny+1][nx+1] = ex * ey
 
 
     return heatmap
@@ -157,7 +157,7 @@ class HeatmapHead(nn.Module):
     def __init__(self):
         super(HeatmapHead, self).__init__()
 
-        self.decoder = BinaryHeatmap2Coordinate(topk=9, stride=4)
+        self.decoder = BinaryHeatmap2Coordinate(topk=4, stride=4)
 
         self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=106)
 

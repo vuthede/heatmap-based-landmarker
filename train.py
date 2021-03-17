@@ -186,7 +186,7 @@ def main(args):
     # Init model
     model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
     
-    if args.resume == "":
+    if args.resume != "":
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['plfd_backbone'])
         model.to(device)

@@ -11,7 +11,8 @@ from torch.utils.data import DataLoader
 import cv2
 import sys
 from models.heatmapmodel import HeatMapLandmarker,\
-     heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, heatmap2softmaxheatmap
+     heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, cross_loss_entropy_heatmap,\
+                     heatmap2softmaxheatmap
 from datasets.dataLAPA106 import LAPA106DataSet
 from torchvision import  transforms
 
@@ -39,7 +40,8 @@ class AverageMeter(object):
 
 # Transform
 transform = transforms.Compose([transforms.ToTensor(),
-                                transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
+                                transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225]),
+                                transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value='random')])
 
 
 
@@ -67,29 +69,33 @@ def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
         lmksGT = lmksGT * 256  
         
         # Generate GT heatmap by randomized rounding
-        # print(lmksGT.shape)
-        heatGT = lmks2heatmap(lmksGT)  
+        heatGT = lmks2heatmap(lmksGT, args.random_round)  
 
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
 
-        if (args.get_topk_in_pred_heats_training):
-            heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
+
+        if args.random_round: #Using cross loss entropy
+            heatPRED =heatPRED.to('cpu')
+
+            loss = cross_loss_entropy_heatmap(heatPRED, heatGT)
         else:
-            heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
+            # MSE loss
+            if (args.get_topk_in_pred_heats_training):
+                heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
+            else:
+                heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
+            
+            # Loss
+            loss = loss_heatmap(heatPRED, heatGT)
 
-
-        # Loss
-        # print(heatTopKPRED.shape, heatGT.shape)
-
-        rme = loss_heatmap(heatPRED, heatGT)
 
         optimizer.zero_grad()
-        rme.backward()
+        loss.backward()
         optimizer.step()
 
-        losses.update(rme.item())
-        print(f"Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {i} / {num_batch} batches. Loss: {rme.item()}")
+        losses.update(loss.item())
+        print(f"Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {i} / {num_batch} batches. Loss: {loss.item()}")
 
     return losses.avg
 
@@ -135,20 +141,28 @@ def validate(valdataloader, model, optimizer, epoch, args):
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
 
-        if (args.get_topk_in_pred_heats_training):
-            heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
+        if args.random_round: #Using cross loss entropy
+            heatPRED =heatPRED.to('cpu')
+
+            loss = cross_loss_entropy_heatmap(heatPRED, heatGT)
         else:
-            heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
+            # MSE loss
+            if (args.get_topk_in_pred_heats_training):
+                heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
+            else:
+                heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
+            
+            # Loss
+            loss = loss_heatmap(heatPRED, heatGT)
 
         if batch < num_vis_batch:
             vis_prediction_batch(batch, img_ori[0], lmksPRED[0])
 
 
         # Loss
-        rme = loss_heatmap(heatPRED, heatGT)
 
-        losses.update(rme.item())
-        message = f"VAldiation Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {batch} / {num_batch} batches. Loss: {rme.item()}"
+        losses.update(loss.item())
+        message = f"VAldiation Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {batch} / {num_batch} batches. Loss: {loss.item()}"
         print(message)
     
     message = f" Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']}. Loss :{losses.avg}"
@@ -272,6 +286,8 @@ def parse_args():
     parser.add_argument('--step_size', default=60, type=float)
     parser.add_argument('--gamma', default=0.1, type=float)
     parser.add_argument('--resume', default="", type=str)
+    parser.add_argument('--random_round', default=1, type=int)
+
 
 
 
@@ -284,3 +300,4 @@ if __name__ == "__main__":
     args = parse_args()
     main(args)
 
+          

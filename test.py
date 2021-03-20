@@ -26,15 +26,15 @@ transform = transforms.Compose([transforms.ToTensor(),
 def square_box(box, ori_shape):
     x1, y1, x2, y2 = box
     cx, cy = (x1+x2)//2, (y1+y2)//2
-    w = max(x2-x1, y2-y1)*1.2
+    w = max(x2-x1, y2-y1)*1.25
     x1 = cx - w//2
     y1 = cy - w//2
     x2 = cx + w//2
     y2 = cy + w//2
 
     x1 = max(x1, 0)
-    y1 = max(y1, 0)
-    x2 = min(x2, ori_shape[1]-1)
+    y1 = max(y1+(y2-y1)*0.2, 0)
+    x2 = min(x2-(x1-x1)*0.1, ori_shape[1]-1)
     y2 = min(y2, ori_shape[0]-1)
 
     return [x1, y1, x2, y2]
@@ -49,11 +49,11 @@ def concat_gt_heatmap(heat):
     """
     \ Heat size : 106 x 64 x 64
     """
-    print(f'Shape Gt heatmap: {heat.shape}')
+    # print(f'Shape Gt heatmap: {heat.shape}')
     heat = heat.numpy()
-    heat = np.mean(heat, axis=0)
+    heat = np.max(heat, axis=0)
     heat = heat*255.0/(np.max(heat))
-    heat = cv2.merge([heat, heat, heat])
+    # heat = cv2.merge([heat, heat, heat])
 
     return heat
 
@@ -65,21 +65,28 @@ if __name__ == "__main__":
 
 
     model = HeatMapLandmarker()
-    model_path = "/home/vuthede/heatmap-based-landmarker/checkpoint/epoch_69.pth.tar"
+    model_path = "/home/vuthede/heatmap-based-landmarker/checkpoint/epoch_2.pth.tar"
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['plfd_backbone'])
     model.to(device)
     model.eval()
 
-    # cap = cv2.VideoCapture("/home/vuthede/Downloads/out0.mp4")
-    cap = cv2.VideoCapture(0)
+    # cap = cv2.VideoCapture("/home/vuthede/Desktop/hardcases/highlight1.mp4")
+    cap = cv2.VideoCapture("/home/vuthede/Downloads/out0.mp4")
+
+    # cap = cv2.VideoCapture(0)
+    out = cv2.VideoWriter('demo.avi',cv2.VideoWriter_fourcc('M','J','P','G'), 10, (1280, 720))
+
     train_dataset = LAPA106DataSet(img_dir='/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/images',
      anno_dir=f'/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/landmarks', augment=True,
     transforms=None)
 
     for img, lmksGT in train_dataset:
+        # img, lmksGT = train_dataset[8]
+        print(img.shape, lmksGT.shape)
         img = np.array(img)
         lmksGT = lmksGT.reshape(-1, 2)
+        print(lmksGT.shape)
         lmksGT = lmksGT * 256  
         
         img_tensor = transform(img)
@@ -91,9 +98,9 @@ if __name__ == "__main__":
         lmks = lmks.cpu().detach().numpy()[0] # 106x2
        
         img = draw_landmarks(img, lmks)
-        img = draw_landmarks(img, lmksGT, color= (0,0,255))
+        img = draw_landmarks(img, lmksGT[:1], color= (0,0,255))
 
-        heatGT = lmks2heatmap(np.array([lmksGT]))[0]
+        heatGT = lmks2heatmap(np.array([lmksGT]), True)[0]
         heatGT_vis = concat_gt_heatmap(heatGT)
 
         pred_heatmap = heatmap2softmaxheatmap(pred_heatmap)
@@ -103,8 +110,8 @@ if __name__ == "__main__":
 
         img = cv2.resize(img, None, fx=2, fy=2)
         cv2.imshow("Image", img)
-        heatGT_vis = cv2.resize(heatGT_vis, None, fx=8, fy=8)
-        pred_heatmap_vis = cv2.resize(pred_heatmap_vis, None, fx=8, fy=8)
+        heatGT_vis = cv2.resize(heatGT_vis, None, fx=2, fy=2)
+        pred_heatmap_vis = cv2.resize(pred_heatmap_vis, None, fx=2, fy=2)
 
         cv2.imshow("GT heatmap", heatGT_vis)
         cv2.imshow("pred heatmap", pred_heatmap_vis)
@@ -121,6 +128,7 @@ if __name__ == "__main__":
 
     # while 1:
     #     ret, img = cap.read()
+    #     img = cv2.resize(img, (1280, 720))
 
     #     if not ret:
     #         break
@@ -152,8 +160,9 @@ if __name__ == "__main__":
     #     img =  cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 1) 
 
     #     cv2.imshow("Image", img)
+    #     out.write(img)
 
-    #     k = cv2.waitKey(0)
+    #     k = cv2.waitKey(1)
         
     #     if k==27:
     #         break

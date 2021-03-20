@@ -5,6 +5,11 @@ import sys
 sys.path.insert(0,'..')
 from models.mobilenet import mobilenetv2
 from torchvision import transforms
+import random
+
+
+BinaryCrossEntropyLoss = torch.nn.BCEWithLogitsLoss(reduction='mean')
+
 
 DEBUG = False
 
@@ -34,9 +39,10 @@ def heatmap2topkheatmap(heatmap, topk=7):
     # Get topk points in each heatmap
     # And using softmax for those score
     heatmap = heatmap.view(N,C,1,-1)
+    
     score, index = heatmap.topk(topk, dim=-1)
     score = F.softmax(score, dim=-1)
-    # heatmap = F.softmax(heatmap, dim=-1)
+    heatmap = F.softmax(heatmap, dim=-1)
 
 
     # Assign non-topk zero values
@@ -66,16 +72,22 @@ def heatmap2softmaxheatmap(heatmap):
     return heatmap
 
 
-def coord2heatmap(w, h, ow, oh, x, y):
+def coord2heatmap(w, h, ow, oh, x, y, random_round=False):
     """
-    Turns an (x,y) coordinate into a lossless heatmap. Arguments:
+    Inserts a coordinate (x,y) from a picture with 
+    original size (w x h) into a heatmap, by randomly assigning 
+    it to one of its nearest neighbor coordinates, with a probability
+    proportional to the coordinate error.
+    
+    Arguments:
     x: x coordinate
     y: y coordinate
-    s: stride ==4
+    w: original width of picture with x coordinate
+    h: original height of picture with y coordinate
     """
     # Get scale
-    sx = ow/w
-    sy = oh/h
+    sx = ow / w
+    sy = oh / h
     
     # Unrounded target points
     px = x * sx
@@ -85,33 +97,41 @@ def coord2heatmap(w, h, ow, oh, x, y):
     nx,ny = int(px), int(py)
     
     # Coordinate error
-    ex,ey = px - nx, py - ny    
-    
+    ex,ey = px - nx, py - ny
+
+    # Heatmap    
     heatmap = torch.zeros(ow, oh)
-   
-    
-    heatmap[ny][nx] = (1-ex) * (1-ey)
-    if (ny+1<oh-1):
-        heatmap[ny+1][nx] = (1-ex) * ey
-    
-    if (nx+1<ow-1):
-        heatmap[ny][nx+1] = ex * (1-ey)
-    
-    if (nx+1<ow-1 and ny+1<oh-1):
-        heatmap[ny+1][nx+1] = ex * ey
 
-
+    if random_round:
+        xyr = torch.rand(2)
+        xx = (ex < xyr[0]).long()
+        yy = (ey < xyr[1]).long()
+        heatmap[min(ny + yy, heatmap.shape[0] - 1), 
+                min(nx+xx, heatmap.shape[1] - 1)] = 1
+    else:
+        nx = min(nx, ow-1)
+        ny = min(ny, oh-1)
+        heatmap[ny][nx] = (1-ex) * (1-ey)
+        if (ny+1<oh-1):
+            heatmap[ny+1][nx] = (1-ex) * ey
+        
+        if (nx+1<ow-1):
+            heatmap[ny][nx+1] = ex * (1-ey)
+        
+        if (nx+1<ow-1 and ny+1<oh-1):
+            heatmap[ny+1][nx+1] = ex * ey
+    
     return heatmap
 
 """
 \ Generate GT lmks to heatmap
 """
-def lmks2heatmap(lmks):
+def lmks2heatmap(lmks, random_round=False):
     w,h,ow,oh=256,256,64,64
     heatmap = torch.rand((lmks.shape[0],lmks.shape[1], ow, oh))
     for i in range(lmks.shape[0]):  # num_lmks
         for j in range(lmks.shape[1]):
-            heatmap[i][j] = coord2heatmap(w, h, ow, oh, lmks[i][j][0], lmks[i][j][1])
+            heatmap[i][j] = coord2heatmap(w, h, ow, oh, lmks[i][j][0], lmks[i][j][1], random_round=random_round)
     
     return heatmap
 
@@ -157,7 +177,7 @@ class HeatmapHead(nn.Module):
     def __init__(self):
         super(HeatmapHead, self).__init__()
 
-        self.decoder = BinaryHeatmap2Coordinate(topk=4, stride=4)
+        self.decoder = BinaryHeatmap2Coordinate(topk=9, stride=4)
 
         self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=106)
 
@@ -206,6 +226,14 @@ def loss_heatmap(gt, pre):
     loss = torch.mean(loss, axis=-1)  # Avarage MSE in 1 batch (.i.e many sample)
     return loss
 
+def cross_loss_entropy_heatmap(p, g):
+    """\ Bx 106x 256x256
+    """
+    B, C, W, H = p.shape
+
+    loss = BinaryCrossEntropyLoss(p, g)
+    
+    return loss
 
 
 

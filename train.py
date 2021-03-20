@@ -44,11 +44,40 @@ transform = transforms.Compose([transforms.ToTensor(),
                                 transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value='random')])
 
 
-
+transform_valid = transforms.Compose([transforms.ToTensor(),
+                                transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
     print(f'Save checkpoint to {filename}')
+
+
+def compute_nme(preds, target, typeerr='inter-ocular'):
+    """ preds/target:: numpy array, shape is (N, L, 2)
+        N: batchsize L: num of landmark 
+    """
+
+    assert typeerr in ['inter-ocular', 'inter-pupil'], f'Typeerr should be in { ["inter-ocular", "inter-pupil"]}'
+
+    preds = preds.reshape(preds.shape[0], -1, 2).detach().cpu().numpy() # landmark 
+    target = target.reshape(target.shape[0], -1, 2).detach().cpu().numpy() # landmark_gt
+
+    N = preds.shape[0]
+    L = preds.shape[1]
+    rmse = np.zeros(N)
+
+    if typeerr=='inter-ocular':
+        l, r = 66, 79
+    else:
+        l, r = 104, 105
+
+    for i in range(N):
+        pts_pred, pts_gt = preds[i, ], target[i, ]
+
+        eye_distant = np.linalg.norm(pts_gt[l ] - pts_gt[r])
+        rmse[i] = np.sum(np.linalg.norm(pts_pred - pts_gt, axis=1)) / (eye_distant)
+
+    return rmse
 
 
 def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
@@ -76,9 +105,9 @@ def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
 
 
         if args.random_round: #Using cross loss entropy
-            heatPRED =heatPRED.to('cpu')
+            heatPRED = heatPRED.to('cpu')
 
-            loss = cross_loss_entropy_heatmap(heatPRED, heatGT)
+            loss = cross_loss_entropy_heatmap(heatPRED, heatGT, pos_weight=torch.Tensor([args.pos_weight]))
         else:
             # MSE loss
             if (args.get_topk_in_pred_heats_training):
@@ -88,7 +117,7 @@ def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
             
             # Loss
             loss = loss_heatmap(heatPRED, heatGT)
-
+    
 
         optimizer.zero_grad()
         loss.backward()
@@ -114,8 +143,11 @@ def validate(valdataloader, model, optimizer, epoch, args):
     num_batch = len(valdataloader)
 
 
-    num_vis_batch = 100
+    num_vis_batch = 250
     batch = 0
+    nme_interocular = []
+    nme_interpupil = []
+
     for img, lmksGT in valdataloader:
         img = np.array(img)
         batch += 1
@@ -124,8 +156,7 @@ def validate(valdataloader, model, optimizer, epoch, args):
         img_ori = img.copy()
         new_img = []
         for i in range(len(img)):
-            new_img.append(transform(img[i]).numpy())  #B x 3 x 256 x 256
-            print(transform(img[i]).shape)
+            new_img.append(transform_valid(img[i]).numpy())  #B x 3 x 256 x 256
         img = torch.Tensor(np.array(new_img))
 
         img = img.to(device)
@@ -136,15 +167,15 @@ def validate(valdataloader, model, optimizer, epoch, args):
         
         # Generate GT heatmap by randomized rounding
         # print(lmksGT.shape)
-        heatGT = lmks2heatmap(lmksGT)  
+        heatGT = lmks2heatmap(lmksGT, args.random_round)  
 
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
 
         if args.random_round: #Using cross loss entropy
             heatPRED =heatPRED.to('cpu')
-
-            loss = cross_loss_entropy_heatmap(heatPRED, heatGT)
+            loss = cross_loss_entropy_heatmap(heatPRED, heatGT, pos_weight=torch.Tensor([args.pos_weight]))
+        
         else:
             # MSE loss
             if (args.get_topk_in_pred_heats_training):
@@ -156,16 +187,23 @@ def validate(valdataloader, model, optimizer, epoch, args):
             loss = loss_heatmap(heatPRED, heatGT)
 
         if batch < num_vis_batch:
-            vis_prediction_batch(batch, img_ori[0], lmksPRED[0])
+            vis_prediction_batch(batch, img_ori, lmksPRED)
 
 
         # Loss
+        nme_interocular_batch = list(compute_nme(lmksPRED, lmksGT, typeerr='inter-ocular'))
+        nme_interpupil_batch = list(compute_nme(lmksPRED, lmksGT, typeerr='inter-pupil'))
+
+
+        nme_interocular += nme_interocular_batch
+        nme_interpupil += nme_interpupil_batch
+
 
         losses.update(loss.item())
-        message = f"VAldiation Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {batch} / {num_batch} batches. Loss: {loss.item()}"
+        message = f"VAldiation Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {batch} / {num_batch} batches. Loss: {loss.item()}.  NME_ocular :{np.mean(nme_interocular_batch)}. NME_pupil :{np.mean(nme_interpupil_batch)}"
         print(message)
     
-    message = f" Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']}. Loss :{losses.avg}"
+    message = f" Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']}. Loss :{losses.avg}. NME_ocular :{np.mean(nme_interocular)}. NME_pupil :{np.mean(nme_interpupil)}"
     logFile.write(message + "\n")
 
     return losses.avg
@@ -184,15 +222,15 @@ def draw_landmarks(img, lmks):
 
 def vis_prediction_batch(batch, img, lmk, output="./vis"):
     """
-    \eye_imgs 256x256x3
-    \lmks 106x2
+    \eye_imgs Bx256x256x3
+    \lmks Bx106x2
     """
     if not os.path.isdir(output):
         os.makedirs(output)
     
-    img = draw_landmarks(img, lmk.cpu().detach().numpy())
-
-    cv2.imwrite(f'{output}/{batch}_.png', img)
+    for i in range(len(img)):
+        image = draw_landmarks(img[i], lmk.cpu().detach().numpy()[i])
+        cv2.imwrite(f'{output}/batch_{batch}_image_{i}.png', image)
     
 
 
@@ -245,14 +283,18 @@ def main(args):
     # for im, lm in train_dataset:
     #     print(type(im), lm.shape)
 
-    for epoch in range(100000):
-        train_one_epoch(traindataloader, model, optimizer, epoch, args)
-        validate(validdataloader, model, optimizer, epoch, args)
-        save_checkpoint({
-            'epoch': epoch,
-            'plfd_backbone': model.state_dict()
-        }, filename=f'{args.snapshot}/epoch_{epoch}.pth.tar')
-        scheduler.step()
+    if args.mode == 'train':
+        for epoch in range(100000):
+            train_one_epoch(traindataloader, model, optimizer, epoch, args)
+            validate(validdataloader, model, optimizer, epoch, args)
+            save_checkpoint({
+                'epoch': epoch,
+                'plfd_backbone': model.state_dict()
+            }, filename=f'{args.snapshot}/epoch_{epoch}.pth.tar')
+            scheduler.step()
+    else:  # inference mode
+        validate(validdataloader, model, optimizer, -1, args)
+
 
 
 
@@ -287,6 +329,9 @@ def parse_args():
     parser.add_argument('--gamma', default=0.1, type=float)
     parser.add_argument('--resume', default="", type=str)
     parser.add_argument('--random_round', default=1, type=int)
+    parser.add_argument('--pos_weight', default=64*64, type=int)
+    parser.add_argument('--mode', default='train', type=str)
+
 
 
 

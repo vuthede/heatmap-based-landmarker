@@ -8,7 +8,6 @@ from torchvision import transforms
 import random
 
 
-BinaryCrossEntropyLoss = torch.nn.BCEWithLogitsLoss(reduction='mean')
 
 
 DEBUG = False
@@ -226,9 +225,11 @@ def loss_heatmap(gt, pre):
     loss = torch.mean(loss, axis=-1)  # Avarage MSE in 1 batch (.i.e many sample)
     return loss
 
-def cross_loss_entropy_heatmap(p, g):
+def cross_loss_entropy_heatmap(p, g, pos_weight=torch.Tensor([1])):
     """\ Bx 106x 256x256
     """
+    BinaryCrossEntropyLoss = torch.nn.BCEWithLogitsLoss(reduction='mean', pos_weight=pos_weight)
+
     B, C, W, H = p.shape
 
     loss = BinaryCrossEntropyLoss(p, g)

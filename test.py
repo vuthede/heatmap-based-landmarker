@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
 
     model = HeatMapLandmarker()
-    model_path = "/home/vuthede/heatmap-based-landmarker/ckpt_entropy_weight_gaussian/epoch_7.pth.tar"
+    model_path = "/home/vuthede/heatmap-based-landmarker/ckpt_entropy_weight_gaussian/epoch_43.pth.tar"
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['plfd_backbone'])
     model.to(device)
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     cap = cv2.VideoCapture("/home/vuthede/Downloads/out0.mp4")
 
     # cap = cv2.VideoCapture(0)
-    out = cv2.VideoWriter('demo_lowlight_gaussian.avi',cv2.VideoWriter_fourcc('M','J','P','G'), 24, (1280, 720))
+    out = cv2.VideoWriter('demo_lowlight_gaussian43.avi',cv2.VideoWriter_fourcc('M','J','P','G'), 24, (1280, 720))
 
     train_dataset = LAPA106DataSet(img_dir='/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/images',
      anno_dir=f'/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/landmarks', augment=True,

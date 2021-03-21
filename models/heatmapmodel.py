@@ -158,8 +158,8 @@ def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaus
 
     if random_round_with_gaussian:
         xyr = torch.rand(2)
-        xx = (ex < xyr[0]).long()
-        yy = (ey < xyr[1]).long()
+        xx = (ex >= xyr[0]).long()
+        yy = (ey >= xyr[1]).long()
         row = min(ny + yy, heatmap.shape[0] - 1)
         col = min(nx+xx, heatmap.shape[1] - 1)
 
@@ -171,8 +171,8 @@ def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaus
 
     elif random_round:
         xyr = torch.rand(2)
-        xx = (ex < xyr[0]).long()
-        yy = (ey < xyr[1]).long()
+        xx = (ex >= xyr[0]).long()
+        yy = (ey >= xyr[1]).long()
         heatmap[min(ny + yy, heatmap.shape[0] - 1), 
                 min(nx+xx, heatmap.shape[1] - 1)] = 1
     else:

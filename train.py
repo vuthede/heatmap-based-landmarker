@@ -12,7 +12,7 @@ import cv2
 import sys
 from models.heatmapmodel import HeatMapLandmarker,\
      heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, cross_loss_entropy_heatmap,\
-                     heatmap2softmaxheatmap
+                     heatmap2softmaxheatmap, heatmap2sigmoidheatmap, adaptive_wing_loss
 from datasets.dataLAPA106 import LAPA106DataSet
 from torchvision import  transforms
 
@@ -98,15 +98,18 @@ def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
         lmksGT = lmksGT * 256  
         
         # Generate GT heatmap by randomized rounding
-        heatGT = lmks2heatmap(lmksGT, args.random_round)  
+        heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
 
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
 
 
-        if args.random_round: #Using cross loss entropy
-            heatPRED = heatPRED.to('cpu')
+        if args.random_round_with_gaussian:
+            heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
+            loss = adaptive_wing_loss(heatPRED, heatGT)
 
+        elif args.random_round: #Using cross loss entropy
+            heatPRED = heatPRED.to('cpu')
             loss = cross_loss_entropy_heatmap(heatPRED, heatGT, pos_weight=torch.Tensor([args.pos_weight]))
         else:
             # MSE loss
@@ -167,12 +170,16 @@ def validate(valdataloader, model, optimizer, epoch, args):
         
         # Generate GT heatmap by randomized rounding
         # print(lmksGT.shape)
-        heatGT = lmks2heatmap(lmksGT, args.random_round)  
+        heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
 
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
 
-        if args.random_round: #Using cross loss entropy
+        if args.random_round_with_gaussian:
+            heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
+            loss = adaptive_wing_loss(heatPRED, heatGT)
+
+        elif args.random_round: #Using cross loss entropy
             heatPRED =heatPRED.to('cpu')
             loss = cross_loss_entropy_heatmap(heatPRED, heatGT, pos_weight=torch.Tensor([args.pos_weight]))
         
@@ -328,8 +335,11 @@ def parse_args():
     parser.add_argument('--step_size', default=60, type=float)
     parser.add_argument('--gamma', default=0.1, type=float)
     parser.add_argument('--resume', default="", type=str)
+
     parser.add_argument('--random_round', default=1, type=int)
     parser.add_argument('--pos_weight', default=64*64, type=int)
+
+    parser.add_argument('--random_round_with_gaussian', default=1, type=int)
     parser.add_argument('--mode', default='train', type=str)
 
 

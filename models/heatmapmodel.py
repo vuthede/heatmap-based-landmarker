@@ -6,7 +6,8 @@ sys.path.insert(0,'..')
 from models.mobilenet import mobilenetv2
 from torchvision import transforms
 import random
-
+import numpy as np
+import cv2
 
 
 
@@ -70,8 +71,62 @@ def heatmap2softmaxheatmap(heatmap):
 
     return heatmap
 
+def heatmap2sigmoidheatmap(heatmap):
+    heatmap = F.sigmoid(heatmap)
 
-def coord2heatmap(w, h, ow, oh, x, y, random_round=False):
+    return heatmap
+
+def generate_gaussian(t, x, y, sigma=10):
+    """
+    Generates a 2D Gaussian point at location x,y in tensor t.
+    
+    x should be in range (-1, 1) to match the output of fastai's PointScaler.
+    
+    sigma is the standard deviation of the generated 2D Gaussian.
+    """
+    _gaussians = {}
+
+
+    h,w = t.shape
+    
+    # Heatmap pixel per output pixel
+    mu_x = int(0.5 * (x + 1.) * w)
+    mu_y = int(0.5 * (y + 1.) * h)
+    
+    tmp_size = sigma * 3
+    
+    # Top-left
+    x1,y1 = int(mu_x - tmp_size), int(mu_y - tmp_size)
+    
+    # Bottom right
+    x2, y2 = int(mu_x + tmp_size + 1), int(mu_y + tmp_size + 1)
+    if x1 >= w or y1 >= h or x2 < 0 or y2 < 0:
+        return t
+    
+    size = 2 * tmp_size + 1
+    tx = np.arange(0, size, 1, np.float32)
+    ty = tx[:, np.newaxis]
+    x0 = y0 = size // 2
+    
+    # The gaussian is not normalized, we want the center value to equal 1
+    g = _gaussians[sigma] if sigma in _gaussians \
+                else torch.Tensor(np.exp(- ((tx - x0) ** 2 + (ty - y0) ** 2) / (2 * sigma ** 2)))
+    _gaussians[sigma] = g
+    
+    # Determine the bounds of the source gaussian
+    g_x_min, g_x_max = max(0, -x1), min(x2, w) - x1
+    g_y_min, g_y_max = max(0, -y1), min(y2, h) - y1
+    
+    # Image range
+    img_x_min, img_x_max = max(0, x1), min(x2, w)
+    img_y_min, img_y_max = max(0, y1), min(y2, h)
+    
+    t[img_y_min:img_y_max, img_x_min:img_x_max] = \
+      g[g_y_min:g_y_max, g_x_min:g_x_max]
+    
+    return t
+
+def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaussian=False):
     """
     Inserts a coordinate (x,y) from a picture with 
     original size (w x h) into a heatmap, by randomly assigning 
@@ -101,7 +156,20 @@ def coord2heatmap(w, h, ow, oh, x, y, random_round=False):
     # Heatmap    
     heatmap = torch.zeros(ow, oh)
 
-    if random_round:
+    if random_round_with_gaussian:
+        xyr = torch.rand(2)
+        xx = (ex < xyr[0]).long()
+        yy = (ey < xyr[1]).long()
+        row = min(ny + yy, heatmap.shape[0] - 1)
+        col = min(nx+xx, heatmap.shape[1] - 1)
+
+        # Normalize into - 1, 2
+        col = (col/float(ow)) * (2) + (-1)
+        row = (row/float(oh)) * (2) + (-1)
+        heatmap = generate_gaussian(heatmap, col, row, sigma=1.5)
+
+
+    elif random_round:
         xyr = torch.rand(2)
         xx = (ex < xyr[0]).long()
         yy = (ey < xyr[1]).long()
@@ -125,12 +193,12 @@ def coord2heatmap(w, h, ow, oh, x, y, random_round=False):
 """
 \ Generate GT lmks to heatmap
 """
-def lmks2heatmap(lmks, random_round=False):
+def lmks2heatmap(lmks, random_round=False, random_round_with_gaussian=False):
     w,h,ow,oh=256,256,64,64
     heatmap = torch.rand((lmks.shape[0],lmks.shape[1], ow, oh))
     for i in range(lmks.shape[0]):  # num_lmks
         for j in range(lmks.shape[1]):
-            heatmap[i][j] = coord2heatmap(w, h, ow, oh, lmks[i][j][0], lmks[i][j][1], random_round=random_round)
+            heatmap[i][j] = coord2heatmap(w, h, ow, oh, lmks[i][j][0], lmks[i][j][1], random_round=random_round, random_round_with_gaussian=random_round_with_gaussian)
     
     return heatmap
 
@@ -176,7 +244,7 @@ class HeatmapHead(nn.Module):
     def __init__(self):
         super(HeatmapHead, self).__init__()
 
-        self.decoder = BinaryHeatmap2Coordinate(topk=9, stride=4)
+        self.decoder = BinaryHeatmap2Coordinate(topk=18, stride=4)
 
         self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=106)
 
@@ -235,6 +303,27 @@ def cross_loss_entropy_heatmap(p, g, pos_weight=torch.Tensor([1])):
     loss = BinaryCrossEntropyLoss(p, g)
     
     return loss
+
+
+def adaptive_wing_loss(y_pred, y_true, w=14, epsilon=1.0, theta = 0.5, alpha=2.1):
+    """
+    \ref https://arxiv.org/pdf/1904.07399.pdf
+    """
+    # Calculate A and C
+    p1 = (1/ (1+(theta/epsilon)**(alpha-y_true)))
+    p2 = (alpha-y_true) * ((theta/epsilon)**(alpha-y_true-1)) * (1/epsilon)
+    A = w * p1 * p2
+    C = theta*A - w*torch.log(1+(theta/epsilon)**(alpha-y_true))
+
+    # Asolute value
+    absolute_x = torch.abs( y_true - y_pred)
+
+    # Adaptive wingloss
+    losses = torch.where(theta > absolute_x, w * torch.log(1.0 + (absolute_x/epsilon)**(alpha-y_true) ), A*absolute_x-C)
+    losses = torch.sum(losses, axis=[2,3])
+    losses = torch.mean(losses)
+
+    return losses # Mean wingloss for each sample in batch
 
 
 

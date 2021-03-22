@@ -11,13 +11,13 @@ from torch.utils.data import DataLoader
 import cv2
 import sys
 from models.heatmapmodel import HeatMapLandmarker,\
-     heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, heatmap2softmaxheatmap
+     heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, heatmap2softmaxheatmap, heatmap2sigmoidheatmap, mean_topk_activation
 from datasets.dataLAPA106 import LAPA106DataSet
 from torchvision import  transforms
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# device = "cuda:0"
-device = 'cpu'
+device = "cuda:0"
+# device = 'cpu'
 
 # Transform
 transform = transforms.Compose([transforms.ToTensor(),
@@ -43,8 +43,16 @@ def square_box(box, ori_shape):
 
     return [x1, y1, x2, y2]
 
-def draw_landmarks(img, lmks, color =(0,255,0)):
-    for a in lmks:
+def draw_landmarks(img, lmks, point_occluded, color =(0,255,0)):
+    default_color = color
+    for a, is_occluded in zip(lmks,point_occluded):
+        if is_occluded:
+            color = (0,0,255)
+        
+        else:
+            color = default_color
+
+
         cv2.circle(img,(int(round(a[0])), int(round(a[1]))), 2, color, -1, lineType=cv2.LINE_AA)
 
     return img
@@ -69,17 +77,19 @@ if __name__ == "__main__":
 
 
     model = HeatMapLandmarker()
-    model_path = "/home/vuthede/heatmap-based-landmarker/ckpt_entropy_weight_gaussian/epoch_43.pth.tar"
+    model_path = "/home/vuthede/heatmap-based-landmarker/ckpt_entropy_weight_gaussian/epoch_80.pth.tar"
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['plfd_backbone'])
     model.to(device)
     model.eval()
 
-    # cap = cv2.VideoCapture("/home/vuthede/Desktop/hardcases/lowlight2.mp4")
+    # cap = cv2.VideoCapture("/home/vuthede/Desktop/hardcases/eyeglass2.mp4")
+    # cap = cv2.VideoCapture("/home/vuthede/Downloads/WH_RGB_2.mp4")
     cap = cv2.VideoCapture("/home/vuthede/Downloads/out0.mp4")
 
+
     # cap = cv2.VideoCapture(0)
-    out = cv2.VideoWriter('demo_lowlight_gaussian43.avi',cv2.VideoWriter_fourcc('M','J','P','G'), 24, (1280, 720))
+    out = cv2.VideoWriter('demo_lowlight_gaussian80.avi',cv2.VideoWriter_fourcc('M','J','P','G'), 24, (1280, 720))
 
     train_dataset = LAPA106DataSet(img_dir='/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/images',
      anno_dir=f'/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train/landmarks', augment=True,
@@ -129,7 +139,7 @@ if __name__ == "__main__":
 
     # cv2.destroyAllWindows()
 
-
+    THRESH_OCCLDUED = 0.5
     while 1:
         ret, img = cap.read()
         img = cv2.resize(img, (1280, 720))
@@ -151,14 +161,48 @@ if __name__ == "__main__":
             img_tensor = transform(crop_face)
             img_tensor = torch.unsqueeze(img_tensor, 0)  # 1x3x256x256
 
-            _, lmks = model(img_tensor.to(device))
+            heatmapPRED, lmks = model(img_tensor.to(device))
+            # heatmapPRED = heatmap2topkheatmap(heatmapPRED.to('cpu'))[0]
+            # print(type(heatmapPRED))
+            # heatmapPRED = heatmapPRED.view(1 , 106, -1)
+            # score = torch.max(heatmapPRED, dim=-1)
+            # print(f"HeatmapPRED shape :{heatmapPRED.shape}")
+
+            # heatmapPRED = heatmap2sigmoidheatmap(heatmapPRED)
+            # print(f"HeatmapPRED1 shape :{heatmapPRED.shape}")
+
+            # heatmapPRED = heatmapPRED.view(1 , 106, -1)
+            # print(f"HeatmapPRED2 shape :{heatmapPRED.shape}")
+
+            # score = torch.mean(heatmapPRED, dim=-1)[0]
+            
+            # score = score.cpu().detach().numpy()
+            # print("Score: ", score)
+
+            scores = mean_topk_activation(heatmapPRED.to('cpu'), topk=3)[0]
+            print("score sahpe111: ",scores.shape)
+            scores = scores.view(106, -1)
+
+            print("score sahpe2: ",scores.shape)
+
+            scores = torch.mean(scores, dim=-1)
+            print("score sahpe: ",scores.shape)
+
+            point_occluded = scores < THRESH_OCCLDUED
+
+
+
+            print(point_occluded)
+
+
+            print(f"HeatmapPRED 3shape :{heatmapPRED.shape}")
 
             lmks = lmks.cpu().detach().numpy()[0] # 106x2
             lmks = lmks/256.0  # Scale into 0-1 coordination
             lmks[:,0], lmks[:,1] = lmks[: ,0] * (x2-x1) + x1 ,\
                                 lmks[:, 1] * (y2-y1) + y1
 
-            img = draw_landmarks(img, lmks)
+            img = draw_landmarks(img, lmks, point_occluded)
             img =  cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 1) 
 
         cv2.imshow("Image", img)

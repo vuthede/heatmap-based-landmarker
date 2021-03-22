@@ -57,6 +57,24 @@ def heatmap2topkheatmap(heatmap, topk=7):
 
     return heatmap
 
+def mean_topk_activation(heatmap, topk=7):
+    """
+    \ Find topk value in each heatmap and calculate softmax for them.
+    \ Another non topk points will be zero.
+    \Based on that https://discuss.pytorch.org/t/how-to-keep-only-top-k-percent-values/83706
+    """
+    N, C, H, W = heatmap.shape
+   
+    # Get topk points in each heatmap
+    # And using softmax for those score
+    heatmap = heatmap.view(N,C,1,-1)
+    
+    score, index = heatmap.topk(topk, dim=-1)
+    score = F.sigmoid(score)
+
+    return score
+
+
 def heatmap2softmaxheatmap(heatmap):
     N, C, H, W = heatmap.shape
    
@@ -275,7 +293,6 @@ class HeatMapLandmarker(nn.Module):
 
         # Note that the 0 channel indicate background
         return heatmaps[:,1,...], landmark
-
 
 
 def loss_heatmap(gt, pre):

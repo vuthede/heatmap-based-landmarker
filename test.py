@@ -10,8 +10,7 @@ from torch.utils import data
 from torch.utils.data import DataLoader
 import cv2
 import sys
-from models.heatmapmodel import HeatMapLandmarker,\
-     heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, heatmap2softmaxheatmap, heatmap2sigmoidheatmap, mean_topk_activation
+from models.heatmapmodel import HeatMapLandmarker, HeatMapLandmarkerInference, heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, heatmap2softmaxheatmap, heatmap2sigmoidheatmap, mean_topk_activation
 from datasets.dataLAPA106 import LAPA106DataSet
 from torchvision import  transforms
 
@@ -76,10 +75,14 @@ if __name__ == "__main__":
     detector = RetinaFace(quality="normal")
 
 
-    model = HeatMapLandmarker()
+    model = HeatMapLandmarkerInference()
     model_path = "/home/vuthede/heatmap-based-landmarker/ckpt_entropy_weight_gaussian/epoch_80.pth.tar"
     checkpoint = torch.load(model_path, map_location=device)
     model.load_state_dict(checkpoint['plfd_backbone'])
+
+    # params = list(model.parameters())
+    # for i in range(len(params)):
+    #     params[i].data = torch.round(params[i].data*10**4) / 10**4
     model.to(device)
     model.eval()
 
@@ -161,7 +164,10 @@ if __name__ == "__main__":
             img_tensor = transform(crop_face)
             img_tensor = torch.unsqueeze(img_tensor, 0)  # 1x3x256x256
 
-            heatmapPRED, lmks = model(img_tensor.to(device))
+            # heatmapPRED, lmks = model(img_tensor.to(device))
+            heatmapPRED = model(img_tensor.to(device))
+            lmks = 4*heatmap2coord(heatmapPRED[:,106:,...])
+
             # heatmapPRED = heatmap2topkheatmap(heatmapPRED.to('cpu'))[0]
             # print(type(heatmapPRED))
             # heatmapPRED = heatmapPRED.view(1 , 106, -1)

@@ -93,13 +93,17 @@ def rotate(angle, center, landmark):
 
 class LAPA106DataSet(data.Dataset):
     TARGET_IMAGE_SIZE = (256, 256)
+    # TARGET_IMAGE_SIZE = (164, 164)
 
-    def __init__(self, img_dir, anno_dir, augment=False, transforms=None):
+
+    def __init__(self, img_dir, anno_dir, augment=False, transforms=None, imgsize=256):
         self.img_dir = img_dir
         self.anno_dir = anno_dir
         self.transforms = transforms
         self.augment = augment
         self.img_path_list = glob.glob(img_dir + "/*.jpg")
+        self.TARGET_IMAGE_SIZE = (imgsize, imgsize)
+
 
     
     def _get_106_landmarks(self, path):

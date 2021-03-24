@@ -4,10 +4,12 @@ import torch.nn.functional as F
 import sys
 sys.path.insert(0,'..')
 from models.mobilenet import mobilenetv2
+from models.mobilenetv2faster import PFLDInference
 from torchvision import transforms
 import random
 import numpy as np
 import cv2
+import time
 
 
 
@@ -144,7 +146,7 @@ def generate_gaussian(t, x, y, sigma=10):
     
     return t
 
-def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaussian=False):
+def coord2heatmap(w, h, ow, oh, x, y, sigma=1.5, random_round=False, random_round_with_gaussian=False):
     """
     Inserts a coordinate (x,y) from a picture with 
     original size (w x h) into a heatmap, by randomly assigning 
@@ -211,15 +213,16 @@ def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaus
 """
 \ Generate GT lmks to heatmap
 """
-def lmks2heatmap(lmks, random_round=False, random_round_with_gaussian=False):
-    w,h,ow,oh=256,256,64,64
+def lmks2heatmap(w, h, ow, oh, sigma, lmks,random_round=False, random_round_with_gaussian=False):
+    # w,h,ow,oh=256,256,64,64
     heatmap = torch.rand((lmks.shape[0],lmks.shape[1], ow, oh))
     for i in range(lmks.shape[0]):  # num_lmks
         for j in range(lmks.shape[1]):
-            heatmap[i][j] = coord2heatmap(w, h, ow, oh, lmks[i][j][0], lmks[i][j][1], random_round=random_round, random_round_with_gaussian=random_round_with_gaussian)
+            heatmap[i][j] = coord2heatmap(w, h, ow, oh, sigma, lmks[i][j][0], lmks[i][j][1], random_round=random_round, random_round_with_gaussian=random_round_with_gaussian)
     
     return heatmap
 
+import math
 class BinaryHeadBlock(nn.Module):
     """BinaryHeadBlock
     """
@@ -229,8 +232,9 @@ class BinaryHeadBlock(nn.Module):
             nn.Conv2d(in_channels, proj_channels, 1, bias=False),
             nn.BatchNorm2d(proj_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(proj_channels, out_channels*2, 1, bias=False),
-        )
+            nn.Conv2d(proj_channels, out_channels*2, 1,bias=False),
+        )   
+
         
     def forward(self, input):
         N, C, H, W = input.shape
@@ -259,12 +263,12 @@ class BinaryHeatmap2Coordinate(nn.Module):
 class HeatmapHead(nn.Module):
     """HeatmapHead
     """
-    def __init__(self):
+    def __init__(self,in_channels=152, proj_channels=152, out_channels=106):
         super(HeatmapHead, self).__init__()
 
         self.decoder = BinaryHeatmap2Coordinate(topk=18, stride=4)
 
-        self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=106)
+        self.head = BinaryHeadBlock(in_channels=in_channels, proj_channels=proj_channels, out_channels=out_channels)
 
     def forward(self, input):
         binary_heats = self.head(input)
@@ -279,13 +283,14 @@ class HeatmapHead(nn.Module):
 class HeatMapLandmarker(nn.Module):
     def __init__(self, pretrained=False, model_url=None):
         super(HeatMapLandmarker, self).__init__()
-        self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
-        self.heatmap_head = HeatmapHead()
-        self.transform = transforms.Compose([
-            transforms.Resize(256, 256),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-        ])
+        # self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
+        self.backbone = PFLDInference(alpha=0.25)
+        self.heatmap_head = HeatmapHead(in_channels=96, proj_channels=96, out_channels=106)
+        # self.transform = transforms.Compose([
+        #     transforms.Resize(256, 256),
+        #     transforms.ToTensor(),
+        #     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+        # ])
     
     
     def forward(self, x):
@@ -294,6 +299,55 @@ class HeatMapLandmarker(nn.Module):
         # Note that the 0 channel indicate background
         return heatmaps[:,1,...], landmark
 
+
+
+class HeatmapHeadInference(nn.Module):
+    """HeatmapHead
+    """
+    def __init__(self):
+        super(HeatmapHeadInference, self).__init__()
+
+        self.decoder = BinaryHeatmap2Coordinate(topk=18, stride=4)
+
+        self.head = BinaryHeadBlock(in_channels=96, proj_channels=96, out_channels=68)
+
+    def forward(self, input):
+        binary_heats = self.head(input)
+        return binary_heats
+
+class HeatMapLandmarkerInference(nn.Module):
+    """
+        Use when convert from torch --> onnx  --> ncnn model in inference time
+    """
+    def __init__(self, pretrained=False, model_url=None):
+        super(HeatMapLandmarkerInference, self).__init__()
+        # self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
+        self.backbone = PFLDInference(alpha=0.25)
+        self.heatmap_head = HeatmapHeadInference()
+        # self.transform = transforms.Compose([
+        #     transforms.Resize(256, 256),
+        #     transforms.ToTensor(),
+        #     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+        # ])
+    
+    
+    def forward(self, x):
+        t1 = time.time()
+        fea = self.backbone(x)
+        # print("Time mobile v2: ", (time.time()-t1)*1000)
+
+        t2 = time.time()
+        heatmaps = self.heatmap_head(fea)
+        # print("heatmap head v2: ", (time.time()-t2)*1000)
+
+
+        # # # Note that the 0 channel indicate background
+        B, Two, C, H, W = heatmaps.shape
+        heatmaps = heatmaps.view(B, C*Two, H, W)
+        # heatmaps = heatmaps[:,1,...]
+
+        # return heatmaps  # 1x212x56x56
+        return heatmaps
 
 def loss_heatmap(gt, pre):
     """
@@ -344,30 +398,56 @@ def adaptive_wing_loss(y_pred, y_true, w=14, epsilon=1.0, theta = 0.5, alpha=2.1
 
 
 
+
+
 if __name__ == "__main__":
-    import time
 
     # Inference model
-    x = torch.rand((16, 3, 256, 256))
+    # x = torch.rand((1, 3, 256, 256))
+    x = torch.rand((1, 3, 164, 164))
     model = HeatMapLandmarker(pretrained=False)
-    heatmaps, lmks = model(x)
-    print(f'heat size :{heatmaps.shape}. lmks shape :{lmks.shape}')
-    topkheatmap = heatmap2topkheatmap(heatmaps, topk=4)
+    model = HeatMapLandmarkerInference(pretrained=False)
+    # model = HeatMapLandmarkerInference(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
+    model = model.to("cpu")
 
-    print(f'heat topk heatmap: ', topkheatmap.shape)
+    # checkpoint_path = "../ckpt/epoch_80.pth.tar"   # Aungment lighting/ fix translation/no histequal  --more epoch
+    # checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    # model.load_state_dict(checkpoint['plfd_backbone'])
 
-    # Lmks:
-    lm = torch.rand(lmks.shape)
-    t1 = time.time()
+    # params = list(model.parameters())
+    # for i in range(len(params)):
+    #     params[i].data = torch.round(params[i].data*10**4) / 10**4
 
-    heatGT = lmks2heatmap(lm)
-    print("time:", time.time()-t1)
+    for m in model.modules():
+        if isinstance(m, nn.Conv2d):
+            # print("uo: ", type(m.weight[0][0][0][0].item()))  
+            print("after: ", m.weight[0][0][0][0])  
 
-    print(heatGT.shape)
 
 
-    # Loss
-    rme = loss_heatmap(topkheatmap, heatGT)
-    print("Loss:", rme)
+    model.eval()
+    times = []
+    for i in range(10):
+        t1 = time.time()
+        heatmaps = model(x)
+        times.append((time.time() - t1)*1000)
+    print("time:", np.mean(times), " (ms)")
+
+    # print(f'heat size :{heatmaps.shape}. lmks shape :{lmks.shape}')
+    # topkheatmap = heatmap2topkheatmap(heatmaps, topk=4)
+
+    # print(f'heat topk heatmap: ', topkheatmap.shape)
+
+    # # Lmks:
+    # lm = torch.rand(lmks.shape)
+
+    # heatGT = lmks2heatmap(lm)
+
+    # print(heatGT.shape)
+
+
+    # # Loss
+    # rme = loss_heatmap(topkheatmap, heatGT)
+    # print("Loss:", rme)
 
 

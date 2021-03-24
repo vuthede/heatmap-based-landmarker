@@ -95,10 +95,12 @@ def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
 
         # Denormalize lmks
         lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
-        lmksGT = lmksGT * 256  
+        lmksGT = lmksGT * args.imgsize
         
         # Generate GT heatmap by randomized rounding
-        heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
+        w, h, ow, oh = args.imgsize, args.imgsize,args.imgsize//4, args.imgsize//4
+        sigma_gaussian = (args.imgsize/256.0)*1.5  # Because with size ==256, sigma =1.5 is good
+        heatGT = lmks2heatmap(w, h, ow, oh,sigma_gaussian,  lmksGT, args.random_round, args.random_round_with_gaussian)  
 
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
@@ -166,11 +168,14 @@ def validate(valdataloader, model, optimizer, epoch, args):
 
         # Denormalize lmks
         lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
-        lmksGT = lmksGT * 256  
+        lmksGT = lmksGT * args.imgsize  
         
         # Generate GT heatmap by randomized rounding
         # print(lmksGT.shape)
-        heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
+        w, h, ow, oh = args.imgsize, args.imgsize,args.imgsize//4, args.imgsize//4
+        sigma_gaussian = (args.imgsize/256.0)*1.5  # Because with size ==256, sigma =1.5 is good
+        heatGT = lmks2heatmap(w, h, ow, oh, sigma_gaussian, lmksGT, args.random_round, args.random_round_with_gaussian)  
+
 
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
@@ -258,8 +263,8 @@ def main(args):
 
     # Train dataset, valid dataset
     train_dataset = LAPA106DataSet(img_dir=f'{args.dataroot}/images', anno_dir=f'{args.dataroot}/landmarks', augment=True,
-    transforms=transform)
-    val_dataset = LAPA106DataSet(img_dir=f'{args.val_dataroot}/images', anno_dir=f'{args.val_dataroot}/landmarks')
+    transforms=transform, imgsize=args.imgsize)
+    val_dataset = LAPA106DataSet(img_dir=f'{args.val_dataroot}/images', anno_dir=f'{args.val_dataroot}/landmarks',imgsize=args.imgsize)
 
     # Dataloader
     traindataloader = DataLoader(
@@ -341,6 +346,8 @@ def parse_args():
 
     parser.add_argument('--random_round_with_gaussian', default=1, type=int)
     parser.add_argument('--mode', default='train', type=str)
+    parser.add_argument('--imgsize', default=256, type=int)
+
 
 
 

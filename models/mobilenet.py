@@ -7,6 +7,7 @@ import torch.utils.model_zoo as model_zoo
 
 __all__ = ['MobileNetV2', 'mobilenetv2']
 
+import time
 
 DEBUG=False
 
@@ -39,6 +40,7 @@ class Block(nn.Module):
             )
         self.residual = (stride == 1) and (in_channels == out_channels)
 
+
     def forward(self, x):
         out = self.conv(x)
         if self.residual:
@@ -61,17 +63,38 @@ class MobileNetV2(nn.Module):
                 in_channels = out_channels
         self.features = nn.Sequential(*features)
 
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         # print(type(m.weight[0][0][0][0].item()))   
+        #         print("before: ", m.weight[0][0][0][0])  
+
+        # weight initialization
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         nn.init.normal_(m.weight)
+        #         if m.bias is not None:
+        #             nn.init.normal_(m.bias)
+        #     elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+        #         nn.init.normal_(m.weight)
+        #         nn.init.normal_(m.bias)
+        #     elif isinstance(m, nn.Linear):
+        #         nn.init.normal_(m.weight, 0, 0.01)
+        #         nn.init.normal_(m.bias)
+
     def forward(self, x):
+        t1 = time.time()
         c2 = self.features[:4](x)
         c3 = self.features[4:7](c2)
         c4 = self.features[7:14](c3)
+        print("Features c1, c2, c3 shape: ", c2.shape, c3.shape, c4.shape)
+        print("Time inference mobile featuresss: ", (time.time()-t1)*1000 )
         kwargs = {'size': c2.shape[-2:],'mode': 'bilinear','align_corners': False}
-        features =  torch.cat([F.interpolate(xx,**kwargs) for xx in [c2,c3,c4]], 1)
+        # features =  torch.cat([F.interpolate(xx,**kwargs) for xx in [c2[:,0:2,...]]], 1)
 
         if DEBUG:
             print(f'------------------------- \nFeatures shape mobilev2: {features.shape}\n---------------------------------')
 
-        return features
+        return c2
 
 def mobilenetv2(pretrained=False, **kwargs):
     """Constructs a MobileNetv2 model.
@@ -89,6 +112,7 @@ def mobilenetv2(pretrained=False, **kwargs):
     model = MobileNetV2(config=config)
     if pretrained:
         assert kwargs["model_url"] is not None, f'Model url should not be  None'
+        print("Loading weight image net-----------------------------------")
         model.load_state_dict(model_zoo.load_url(kwargs["model_url"]), strict=False)
     return model
 

@@ -146,7 +146,7 @@ def generate_gaussian(t, x, y, sigma=10):
     
     return t
 
-def coord2heatmap(w, h, ow, oh, x, y, sigma=1.5, random_round=False, random_round_with_gaussian=False):
+def coord2heatmap(w, h, ow, oh, sigma, x, y, random_round=False, random_round_with_gaussian=False):
     """
     Inserts a coordinate (x,y) from a picture with 
     original size (w x h) into a heatmap, by randomly assigning 

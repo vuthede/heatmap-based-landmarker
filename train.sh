@@ -6,5 +6,7 @@ CUDA_VISIBLE_DEVICES=0 python3 train.py --snapshot ckpt_entropy_weight_gaussian_
                                         --step_size 20\
                                         --gamma 0.5\
                                         --random_round_with_gaussian 1\
-                                        --mode train\
-                                        --imgsize 128\
+                                        --mode val\
+                                        --imgsize 256\
+                                        --use_author_mobv2 1\
+                                        --resume ./ckpt/epoch_80.pth.tar

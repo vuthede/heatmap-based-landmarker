@@ -82,19 +82,19 @@ class MobileNetV2(nn.Module):
         #         nn.init.normal_(m.bias)
 
     def forward(self, x):
-        t1 = time.time()
+        # t1 = time.time()
         c2 = self.features[:4](x)
         c3 = self.features[4:7](c2)
         c4 = self.features[7:14](c3)
-        print("Features c1, c2, c3 shape: ", c2.shape, c3.shape, c4.shape)
-        print("Time inference mobile featuresss: ", (time.time()-t1)*1000 )
+        # print("Features c1, c2, c3 shape: ", c2.shape, c3.shape, c4.shape)
+        # print("Time inference mobile featuresss: ", (time.time()-t1)*1000 )
         kwargs = {'size': c2.shape[-2:],'mode': 'bilinear','align_corners': False}
-        # features =  torch.cat([F.interpolate(xx,**kwargs) for xx in [c2[:,0:2,...]]], 1)
+        features =  torch.cat([F.interpolate(xx,**kwargs) for xx in [c2, c3, c4]], 1)
 
         if DEBUG:
             print(f'------------------------- \nFeatures shape mobilev2: {features.shape}\n---------------------------------')
 
-        return c2
+        return features
 
 def mobilenetv2(pretrained=False, **kwargs):
     """Constructs a MobileNetv2 model.
@@ -117,9 +117,10 @@ def mobilenetv2(pretrained=False, **kwargs):
     return model
 
 
-# if __name__ == "__main__":
-#     x = torch.rand((1, 3, 256,256))
-#     model = mobilenetv2()
-#     a = model(x)
-#     print(a.shape)
+if __name__ == "__main__":
+    # x = torch.rand((1, 3, 256,256))
+    x = torch.rand((1, 3, 192, 192))
+    model = mobilenetv2()
+    a = model(x)
+    print(a.shape)
 

@@ -154,7 +154,12 @@ def validate(valdataloader, model, optimizer, epoch, args):
     nme_interpupil = []
 
     for img, lmksGT in valdataloader:
+        # print(img.shape, type(img))
         img = np.array(img)
+
+        # RGB to YYY
+        
+        
         batch += 1
         # img shape: B x  256 x 256 x3
         # NORMALZIED lmks shape: B x 106 x 256 x 256
@@ -248,7 +253,7 @@ def vis_prediction_batch(batch, img, lmk, output="./vis"):
 
 def main(args):
     # Init model
-    model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
+    model = HeatMapLandmarker(alpha=args.alpha, use_author_mobv2=args.use_author_mobv2,pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
     
     if args.resume != "":
         checkpoint = torch.load(args.resume, map_location=device)
@@ -271,7 +276,7 @@ def main(args):
         train_dataset,
         batch_size=args.train_batchsize,
         shuffle=True,
-        num_workers=2,
+        num_workers=4,
         drop_last=True)
 
     
@@ -347,13 +352,13 @@ def parse_args():
     parser.add_argument('--random_round_with_gaussian', default=1, type=int)
     parser.add_argument('--mode', default='train', type=str)
     parser.add_argument('--imgsize', default=256, type=int)
+    parser.add_argument('--alpha', default=0.25, type=float)
+    parser.add_argument('--use_author_mobv2', default=0, type=int)
 
 
 
 
 
-
-    
     args = parser.parse_args()
     return args
 

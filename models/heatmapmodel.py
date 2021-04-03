@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import sys
 sys.path.insert(0,'..')
 from models.mobilenet import mobilenetv2
+from models.mobilev3 import mobilenetv3
 from models.mobilenetv2faster import PFLDInference
 from torchvision import transforms
 import random
@@ -281,17 +282,50 @@ class HeatmapHead(nn.Module):
         return binary_heats, lmks
         
 class HeatMapLandmarker(nn.Module):
-    def __init__(self, pretrained=False, model_url=None):
+    def __init__(self, alpha=0.25, use_author_mobv2=False, pretrained=False, model_url=None, use_mobile_v3=False):
         super(HeatMapLandmarker, self).__init__()
-        # self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
-        self.backbone = PFLDInference(alpha=0.25)
-        self.heatmap_head = HeatmapHead(in_channels=96, proj_channels=96, out_channels=106)
-        # self.transform = transforms.Compose([
-        #     transforms.Resize(256, 256),
-        #     transforms.ToTensor(),
-        #     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
-        # ])
-    
+
+        if use_author_mobv2:
+            self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
+            self.heatmap_head = HeatmapHead(in_channels=152, proj_channels=152, out_channels=106)
+        elif use_mobile_v3:
+            self.backbone = mobilenetv3(width_mult=alpha)
+            if alpha==1:
+                in_channels=168
+                proj_channels=168
+                out_channels=106
+            self.heatmap_head = HeatmapHead(in_channels=in_channels, proj_channels=proj_channels, out_channels=out_channels)
+            
+
+        else:
+            self.backbone = PFLDInference(alpha=alpha)
+
+            if alpha==0.25:
+                # in_channels=96
+                # proj_channels=96
+                # out_channels=106
+                in_channels=160
+                proj_channels=160
+                out_channels=106
+                
+            elif alpha==0.5:
+                # in_channels=192
+                # proj_channels=192
+                # out_channels=106
+                in_channels=160
+                proj_channels=160
+                out_channels=106
+            elif alpha==0.75:
+                in_channels=288
+                proj_channels=288
+                out_channels=106
+            else :
+                in_channels=384
+                proj_channels=384
+                out_channels=106
+            self.heatmap_head = HeatmapHead(in_channels=in_channels, proj_channels=proj_channels, out_channels=out_channels)
+
+   
     
     def forward(self, x):
         heatmaps, landmark = self.heatmap_head(self.backbone(x))
@@ -304,12 +338,12 @@ class HeatMapLandmarker(nn.Module):
 class HeatmapHeadInference(nn.Module):
     """HeatmapHead
     """
-    def __init__(self):
+    def __init__(self, in_channels=152, proj_channels=152, out_channels=106):
         super(HeatmapHeadInference, self).__init__()
 
-        self.decoder = BinaryHeatmap2Coordinate(topk=18, stride=4)
 
-        self.head = BinaryHeadBlock(in_channels=96, proj_channels=96, out_channels=68)
+        self.head = BinaryHeadBlock(in_channels=in_channels, proj_channels=proj_channels, out_channels=out_channels)
+
 
     def forward(self, input):
         binary_heats = self.head(input)
@@ -319,11 +353,49 @@ class HeatMapLandmarkerInference(nn.Module):
     """
         Use when convert from torch --> onnx  --> ncnn model in inference time
     """
-    def __init__(self, pretrained=False, model_url=None):
+    def __init__(self,  alpha=0.25, use_author_mobv2=False, pretrained=False, model_url=None, use_mobile_v3=False):
         super(HeatMapLandmarkerInference, self).__init__()
-        # self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
-        self.backbone = PFLDInference(alpha=0.25)
-        self.heatmap_head = HeatmapHeadInference()
+        if use_author_mobv2:
+            self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
+            self.heatmap_head = HeatmapHeadInference(in_channels=152, proj_channels=152, out_channels=106)
+        elif use_mobile_v3:
+            self.backbone = mobilenetv3(width_mult=alpha)
+            if alpha==1:
+                in_channels=168
+                proj_channels=168
+                out_channels=106
+            if alpha==0.5:
+                in_channels=88
+                proj_channels=88
+                out_channels=106
+            self.heatmap_head = HeatmapHeadInference(in_channels=in_channels, proj_channels=proj_channels, out_channels=out_channels)
+        else:
+            self.backbone = PFLDInference(alpha=alpha)
+
+            if alpha==0.25:
+                in_channels=96
+                proj_channels=96
+                out_channels=106
+                # in_channels=160
+                # proj_channels=160
+                # out_channels=106
+                
+            elif alpha==0.5:
+                # in_channels=192
+                # proj_channels=192
+                # out_channels=106
+                in_channels=160
+                proj_channels=160
+                out_channels=106
+            elif alpha==0.75:
+                in_channels=288
+                proj_channels=288
+                out_channels=106
+            else :
+                in_channels=384
+                proj_channels=384
+                out_channels=106
+            self.heatmap_head = HeatmapHeadInference(in_channels=in_channels, proj_channels=proj_channels, out_channels=out_channels)
         # self.transform = transforms.Compose([
         #     transforms.Resize(256, 256),
         #     transforms.ToTensor(),
@@ -334,11 +406,13 @@ class HeatMapLandmarkerInference(nn.Module):
     def forward(self, x):
         t1 = time.time()
         fea = self.backbone(x)
-        # print("Time mobile v2: ", (time.time()-t1)*1000)
+        print("Time mobile v2: ", (time.time()-t1)*1000)
+        print("feature v3 shape:  ", fea.shape)
 
         t2 = time.time()
         heatmaps = self.heatmap_head(fea)
-        # print("heatmap head v2: ", (time.time()-t2)*1000)
+        print("heatmap head v2: ", (time.time()-t2)*1000)
+        print("heatmaps shape: ", heatmaps[0].shape)
 
 
         # # # Note that the 0 channel indicate background

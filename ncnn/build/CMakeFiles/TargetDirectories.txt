@@ -1,0 +1,3 @@
+/home/vuthede/heatmap-based-landmarker/ncnn/build/CMakeFiles/rebuild_cache.dir
+/home/vuthede/heatmap-based-landmarker/ncnn/build/CMakeFiles/benchmark.dir
+/home/vuthede/heatmap-based-landmarker/ncnn/build/CMakeFiles/edit_cache.dir

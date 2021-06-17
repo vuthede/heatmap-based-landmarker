@@ -6,4 +6,12 @@ CUDA_VISIBLE_DEVICES=0 python3 train.py --snapshot ckpt_entropy_weight_gaussian\
                                         --step_size 20\
                                         --gamma 0.5\
                                         --random_round_with_gaussian 1\
-                                        --mode train
+                                        --mode train\
+                                        --vis_dir vis_68lmks\
+                                        --vw300_datadir /home/ubuntu/vuthede/landmarkV2/300VW_frames\
+                                        --vw300_annotdir /home/ubuntu/vuthede/landmarkV2/300VW_Dataset_2015_12_14\
+                                        --style_datadir /home/ubuntu/vuthede/landmarkV2/300W-Convert\
+                                        --lp_datadir /home/ubuntu/vuthede/landmarkV2/300W-LP\
+                                        --include_300vw 1\
+                                        --include_style 1\
+                                        --include_lp 1\

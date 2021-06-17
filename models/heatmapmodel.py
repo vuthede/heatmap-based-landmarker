@@ -144,7 +144,21 @@ def generate_gaussian(t, x, y, sigma=10):
     
     return t
 
+
+heatmap_cached =  {}
 def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaussian=False):
+    if(len(heatmap_cached)==0):
+        for col in range(ow):
+            for row in range(oh):
+                col_f = (col/float(ow)) * (2) + (-1)
+                row_f = (row/float(oh)) * (2) + (-1)
+                heatmap = torch.zeros(ow, oh)
+                heatmap_cached[f"{col}_{row}"] = generate_gaussian(heatmap, col_f, row_f, sigma=1.5)
+        
+        print(f'Yeah ....Finish generate heatmap cache----------------------------------')
+
+
+
     """
     Inserts a coordinate (x,y) from a picture with 
     original size (w x h) into a heatmap, by randomly assigning 
@@ -175,17 +189,28 @@ def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaus
     heatmap = torch.zeros(ow, oh)
 
     if random_round_with_gaussian:
+        
         xyr = torch.rand(2)
         xx = (ex >= xyr[0]).long()
         yy = (ey >= xyr[1]).long()
+
         row = min(ny + yy, heatmap.shape[0] - 1)
         col = min(nx+xx, heatmap.shape[1] - 1)
+        row = max(row, 0)
+        col = max(col, 0)
+
 
         # Normalize into - 1, 2
-        col = (col/float(ow)) * (2) + (-1)
-        row = (row/float(oh)) * (2) + (-1)
-        heatmap = generate_gaussian(heatmap, col, row, sigma=1.5)
 
+        # col = (col/float(ow)) * (2) + (-1)
+        # row = (row/float(oh)) * (2) + (-1)
+        # t0=time.time()
+
+        # heatmap = generate_gaussian(heatmap, col, row, sigma=1.5)
+        heatmap = heatmap_cached[f'{col}_{row}']
+        # t1 = time.time()
+
+        # print(f"heatmap time :{t1-t0}")
 
     elif random_round:
         xyr = torch.rand(2)
@@ -207,6 +232,70 @@ def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaus
             heatmap[ny+1][nx+1] = ex * ey
     
     return heatmap
+
+# def coord2heatmap(w, h, ow, oh, x, y, random_round=False, random_round_with_gaussian=False):
+#     """
+#     Inserts a coordinate (x,y) from a picture with 
+#     original size (w x h) into a heatmap, by randomly assigning 
+#     it to one of its nearest neighbor coordinates, with a probability
+#     proportional to the coordinate error.
+    
+#     Arguments:
+#     x: x coordinate
+#     y: y coordinate
+#     w: original width of picture with x coordinate
+#     h: original height of picture with y coordinate
+#     """
+#     # Get scale
+#     sx = ow / w
+#     sy = oh / h
+    
+#     # Unrounded target points
+#     px = x * sx
+#     py = y * sy
+    
+#     # Truncated coordinates
+#     nx,ny = int(px), int(py)
+    
+#     # Coordinate error
+#     ex,ey = px - nx, py - ny
+
+#     # Heatmap    
+#     heatmap = torch.zeros(ow, oh)
+
+#     if random_round_with_gaussian:
+#         xyr = torch.rand(2)
+#         xx = (ex >= xyr[0]).long()
+#         yy = (ey >= xyr[1]).long()
+#         row = min(ny + yy, heatmap.shape[0] - 1)
+#         col = min(nx+xx, heatmap.shape[1] - 1)
+
+#         # Normalize into - 1, 2
+#         col = (col/float(ow)) * (2) + (-1)
+#         row = (row/float(oh)) * (2) + (-1)
+#         heatmap = generate_gaussian(heatmap, col, row, sigma=1.5)
+
+
+#     elif random_round:
+#         xyr = torch.rand(2)
+#         xx = (ex >= xyr[0]).long()
+#         yy = (ey >= xyr[1]).long()
+#         heatmap[min(ny + yy, heatmap.shape[0] - 1), 
+#                 min(nx+xx, heatmap.shape[1] - 1)] = 1
+#     else:
+#         nx = min(nx, ow-1)
+#         ny = min(ny, oh-1)
+#         heatmap[ny][nx] = (1-ex) * (1-ey)
+#         if (ny+1<oh-1):
+#             heatmap[ny+1][nx] = (1-ex) * ey
+        
+#         if (nx+1<ow-1):
+#             heatmap[ny][nx+1] = ex * (1-ey)
+        
+#         if (nx+1<ow-1 and ny+1<oh-1):
+#             heatmap[ny+1][nx+1] = ex * ey
+    
+#     return heatmap
 
 """
 \ Generate GT lmks to heatmap
@@ -264,7 +353,7 @@ class HeatmapHead(nn.Module):
 
         self.decoder = BinaryHeatmap2Coordinate(topk=18, stride=4)
 
-        self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=106)
+        self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=68)
 
     def forward(self, input):
         binary_heats = self.head(input)
@@ -322,7 +411,7 @@ def cross_loss_entropy_heatmap(p, g, pos_weight=torch.Tensor([1])):
     return loss
 
 
-def adaptive_wing_loss(y_pred, y_true, w=14, epsilon=1.0, theta = 0.5, alpha=2.1):
+def adaptive_wing_loss(y_pred, y_true, w=14, epsilon=1.0, theta = 0.5, alpha=2.1, y_true_visible_mask=None):
     """
     \ref https://arxiv.org/pdf/1904.07399.pdf
     """
@@ -333,7 +422,10 @@ def adaptive_wing_loss(y_pred, y_true, w=14, epsilon=1.0, theta = 0.5, alpha=2.1
     C = theta*A - w*torch.log(1+(theta/epsilon)**(alpha-y_true))
 
     # Asolute value
-    absolute_x = torch.abs( y_true - y_pred)
+    if y_true_visible_mask is not None:
+        absolute_x = torch.abs( y_true - y_pred) * y_true_visible_mask
+    else:
+        absolute_x = torch.abs( y_true - y_pred)
 
     # Adaptive wingloss
     losses = torch.where(theta > absolute_x, w * torch.log(1.0 + (absolute_x/epsilon)**(alpha-y_true) ), A*absolute_x-C)

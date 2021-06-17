@@ -13,8 +13,15 @@ import sys
 from models.heatmapmodel import HeatMapLandmarker,\
      heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, cross_loss_entropy_heatmap,\
                      heatmap2softmaxheatmap, heatmap2sigmoidheatmap, adaptive_wing_loss
-from datasets.dataLAPA106 import LAPA106DataSet
+# from datasets.dataLAPA106 import LAPA106DataSet
 from torchvision import  transforms
+
+
+from datasets.data300VW import VW300 
+from datasets.data300WStyle import W300Style
+from datasets.data300WLP import W300LargePose
+from logger.TensorboardLogger import TensorBoardLogger
+from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,10 +73,17 @@ def compute_nme(preds, target, typeerr='inter-ocular'):
     L = preds.shape[1]
     rmse = np.zeros(N)
 
-    if typeerr=='inter-ocular':
-        l, r = 66, 79
+    if L==106:
+        if typeerr=='inter-ocular':
+            l, r = 66, 79
+        else:
+            l, r = 104, 105
     else:
-        l, r = 104, 105
+        if typeerr=='inter-ocular':
+            l, r = 36, 45
+        else:
+            l, r = 36, 45
+
 
     for i in range(N):
         pts_pred, pts_gt = preds[i, ], target[i, ]
@@ -79,6 +93,121 @@ def compute_nme(preds, target, typeerr='inter-ocular'):
 
     return rmse
 
+
+def data_generator(dataloaders, tags=["300VW", "Style", "LP"], args=None):
+    # Total batch
+    total_batch = 0
+
+    # Balance data in each dataset    
+    if args.sampling_data:
+        min_len_dataloaders = np.min([len(dl) for dl in dataloaders])
+        total_batch = min_len_dataloaders * len(tags)
+    else:
+        for dl in dataloaders:
+            total_batch += len(dl)
+
+    print("Total batch need to be trained :", total_batch)
+    
+    # Iterators
+    iters = []
+    for i in range(0,len(dataloaders)):
+        iters.append(iter(dataloaders[i]))
+
+
+    if args.curriculum:
+        min_len_dataloaders = np.min([len(dl) for dl in dataloaders])
+        for dataiter, tag in zip(iters, tags):
+            b = 0
+            for batch in dataiter:
+                if args.sampling_data:
+                    b +=1
+                    if b>min_len_dataloaders:
+                        break
+                yield batch, tag
+    else:
+        for i in range(0, total_batch):
+            # random_ind = random.randint(0,len(tags)-1)
+            random_ind = i%(len(tags))
+            # print(f"Choose batch of dataset :{tags[random_ind]}")
+            chosen_data_loader = iters[random_ind] 
+            batch = next(iters[random_ind], None)
+            
+            
+            # If the end of dataloader --> reset dataloader
+            if not batch:  
+                iters[random_ind] = iter(dataloaders[random_ind]) 
+                batch = next(iters[random_ind], None)
+                assert batch is not None, f'Batch should not be None here!!!!!. Something wrong with dataloader'
+
+            yield batch, tags[random_ind]
+
+
+def train_shuffle_cross_data(dataloaders, model, optimizer, epoch, args, tensorboardLogger=None,tags=["Synthesis", "MLR", "LaPa"]):
+    model.train()
+    losses300VW = AverageMeter()
+    lossesStyle = AverageMeter()
+    lossesLP = AverageMeter()
+
+
+    num_batch = 0
+
+    if args.sampling_data:
+        min_len_dataloaders = np.min([len(dl) for dl in dataloaders])
+        num_batch = min_len_dataloaders * len(tags)
+    else:
+        for dl in dataloaders:
+            num_batch += len(dl)
+    i = 0
+
+    with tqdm(data_generator(dataloaders, tags=tags, args=args), unit="batch") as tepoch:
+        for (img, lmksGT), tag in tepoch:
+            i +=1
+            # if i ==40:
+            #     break
+            tepoch.set_description(f"Epoch {epoch}")
+            img = img.to(device)
+
+            # Groundtruth heatmaps
+            lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
+            x_ok = torch.logical_and(lmksGT[:,:,0] >= 0,  lmksGT[:,:,0] <= 1)
+            y_ok = torch.logical_and(lmksGT[:,:,1] >= 0,  lmksGT[:,:,1] <= 1)
+            y_true_visible_mask = torch.logical_and(x_ok, y_ok)
+            y_true_visible_mask = torch.unsqueeze(y_true_visible_mask, -1)
+            y_true_visible_mask = torch.unsqueeze(y_true_visible_mask, -1)
+            # print(y_true_visible_mask.shape)
+
+            lmksGT = lmksGT * 256  
+            heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
+
+            # Predicted heatmaps
+            heatPRED, lmksPRED = model(img.to(device))
+            heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
+
+
+            # Loss Adaptive wingloss
+            loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=y_true_visible_mask)
+
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if tag=="300VW":
+                losses300VW.update(loss.item())
+
+            elif tag=="Style":
+                lossesStyle.update(loss.item())
+            elif tag=="LP":
+                lossesLP.update(loss.item())
+            else:
+                raise NotImplementedError
+            
+            # LOG
+            tepoch.set_postfix(l2loss=loss.item(), dataset=tag)
+        
+        # Log train averge loss in each dataset
+        tensorboardLogger.log(f"train/loss/300VW", losses300VW.avg, epoch)
+        tensorboardLogger.log(f"train/loss/Style", lossesStyle.avg, epoch)
+        tensorboardLogger.log(f"train/loss/Lp", lossesLP.avg, epoch)
 
 def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
     model.train()
@@ -133,7 +262,7 @@ def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
 
     
 
-def validate(valdataloader, model, optimizer, epoch, args):
+def validate(valdataloader, model, optimizer, epoch, args, tensorboardLogger=None,tag="300VW"):
     if not os.path.isdir(args.snapshot):
         os.makedirs(args.snapshot)
 
@@ -154,6 +283,10 @@ def validate(valdataloader, model, optimizer, epoch, args):
     for img, lmksGT in valdataloader:
         img = np.array(img)
         batch += 1
+
+        if batch>=num_vis_batch:
+            break
+
         # img shape: B x  256 x 256 x3
         # NORMALZIED lmks shape: B x 106 x 256 x 256
         img_ori = img.copy()
@@ -166,6 +299,11 @@ def validate(valdataloader, model, optimizer, epoch, args):
 
         # Denormalize lmks
         lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
+        x_ok = torch.logical_and(lmksGT[:,:,0] >= 0,  lmksGT[:,:,0] <= 1)
+        y_ok = torch.logical_and(lmksGT[:,:,1] >= 0,  lmksGT[:,:,1] <= 1)
+        y_true_visible_mask = torch.logical_and(x_ok, y_ok)
+        y_true_visible_mask = torch.unsqueeze(y_true_visible_mask, -1)
+        y_true_visible_mask = torch.unsqueeze(y_true_visible_mask, -1)
         lmksGT = lmksGT * 256  
         
         # Generate GT heatmap by randomized rounding
@@ -175,26 +313,17 @@ def validate(valdataloader, model, optimizer, epoch, args):
         # Inference model to generate heatmap
         heatPRED, lmksPRED = model(img.to(device))
 
-        if args.random_round_with_gaussian:
-            heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
-            loss = adaptive_wing_loss(heatPRED, heatGT)
+    
+        heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
+        loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=y_true_visible_mask)
 
-        elif args.random_round: #Using cross loss entropy
-            heatPRED =heatPRED.to('cpu')
-            loss = cross_loss_entropy_heatmap(heatPRED, heatGT, pos_weight=torch.Tensor([args.pos_weight]))
+    
         
-        else:
-            # MSE loss
-            if (args.get_topk_in_pred_heats_training):
-                heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
-            else:
-                heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
-            
-            # Loss
-            loss = loss_heatmap(heatPRED, heatGT)
+        # Loss
+        loss = loss_heatmap(heatPRED, heatGT)
 
         if batch < num_vis_batch:
-            vis_prediction_batch(batch, img_ori, lmksPRED)
+            vis_prediction_batch(batch, img_ori, lmksPRED, output=args.vis_dir)
 
 
         # Loss
@@ -212,6 +341,9 @@ def validate(valdataloader, model, optimizer, epoch, args):
     
     message = f" Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']}. Loss :{losses.avg}. NME_ocular :{np.mean(nme_interocular)}. NME_pupil :{np.mean(nme_interpupil)}"
     logFile.write(message + "\n")
+
+    tensorboardLogger.log(f"val/loss/{tag}", losses.avg, epoch)
+    tensorboardLogger.log(f"val/nme_ocular/{tag}", np.mean(nme_interocular), epoch)
 
     return losses.avg
 
@@ -242,6 +374,8 @@ def vis_prediction_batch(batch, img, lmk, output="./vis"):
 
 
 def main(args):
+    tensorboardLogger = TensorBoardLogger(root="runs", experiment_name=args.snapshot)
+
     # Init model
     model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
     
@@ -249,29 +383,110 @@ def main(args):
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['plfd_backbone'])
         model.to(device)
-
-    
     
     model.to(device)
 
   
 
-    # Train dataset, valid dataset
-    train_dataset = LAPA106DataSet(img_dir=f'{args.dataroot}/images', anno_dir=f'{args.dataroot}/landmarks', augment=True,
-    transforms=transform)
-    val_dataset = LAPA106DataSet(img_dir=f'{args.val_dataroot}/images', anno_dir=f'{args.val_dataroot}/landmarks')
+    # # Train dataset, valid dataset
+    # train_dataset = LAPA106DataSet(img_dir=f'{args.dataroot}/images', anno_dir=f'{args.dataroot}/landmarks', augment=True,
+    # transforms=transform)
+    # val_dataset = LAPA106DataSet(img_dir=f'{args.val_dataroot}/images', anno_dir=f'{args.val_dataroot}/landmarks')
+
+    # # Dataloader
+    # traindataloader = DataLoader(
+    #     train_dataset,
+    #     batch_size=args.train_batchsize,
+    #     shuffle=True,
+    #     num_workers=2,
+    #     drop_last=True)
+
+    
+    # validdataloader = DataLoader(
+    #     val_dataset,
+    #     batch_size=args.val_batchsize,
+    #     shuffle=False,
+    #     num_workers=2,
+    #     drop_last=True)
+
+    train_300VW = VW300(img_dir=args.vw300_datadir,
+                        anno_dir=args.vw300_annotdir,
+                        augment=args.do_train_augment,
+                        imgsize=args.imgsize,
+                        transforms=transform, set_type="train")
+    
+    val_300VW = VW300(img_dir=args.vw300_datadir,
+                        anno_dir=args.vw300_annotdir,
+                        augment=False,
+                        imgsize=args.imgsize,
+                        transforms=None, set_type="val")
+
+    train_style = W300Style(img_dir=args.style_datadir,
+                    anno_dir=args.style_datadir,
+                    augment=args.do_train_augment,
+                        imgsize=args.imgsize,
+                    transforms=transform, set_type="train")
+    
+    val_style = W300Style(img_dir=args.style_datadir,
+                    anno_dir=args.style_datadir,
+                    augment=False,
+                        imgsize=args.imgsize,
+                    transforms=None, set_type="val")
+    
+    
+    train_lp = W300LargePose(img_dir=args.lp_datadir,
+                    anno_dir=args.lp_datadir,
+                    augment=args.do_train_augment,
+                        imgsize=args.imgsize,
+                    transforms=transform, set_type="train")
+    
+    val_lp = W300LargePose(img_dir=args.lp_datadir,
+                    anno_dir=args.lp_datadir,
+                    augment=False,
+                        imgsize=args.imgsize,
+                    transforms=None, set_type="val")
+
+    print(f'Len train LP :{len(train_lp)}. len val LP :{len(val_lp)}')
 
     # Dataloader
-    traindataloader = DataLoader(
-        train_dataset,
+    traindataloader_300VW = DataLoader(
+        train_300VW,
         batch_size=args.train_batchsize,
         shuffle=True,
+        num_workers=8,
+        drop_last=True)
+    
+    validdataloader_300VW = DataLoader(
+        val_300VW,
+        batch_size=args.val_batchsize,
+        shuffle=False,
+        num_workers=2,
+        drop_last=True)
+    
+    traindataloader_style = DataLoader(
+        train_style,
+        batch_size=args.train_batchsize,
+        shuffle=True,
+        num_workers=8,
+        drop_last=True)
+    
+    validdataloader_style = DataLoader(
+        val_style,
+        batch_size=args.val_batchsize,
+        shuffle=False,
         num_workers=2,
         drop_last=True)
 
     
-    validdataloader = DataLoader(
-        val_dataset,
+    traindataloader_lp = DataLoader(
+        train_lp,
+        batch_size=args.train_batchsize,
+        shuffle=True,
+        num_workers=8,
+        drop_last=True)
+    
+    validdataloader_lp = DataLoader(
+        val_lp,
         batch_size=args.val_batchsize,
         shuffle=False,
         num_workers=2,
@@ -291,9 +506,29 @@ def main(args):
     #     print(type(im), lm.shape)
 
     if args.mode == 'train':
+        loaders = []
+        tags = []
+        if args.include_300vw:
+            loaders.append(traindataloader_300VW)
+            tags.append("300VW")
+        if args.include_style:
+            loaders.append(traindataloader_style)
+            tags.append("Style")
+        if args.include_lp:
+            loaders.append(traindataloader_lp)
+            tags.append("LP")
+
         for epoch in range(100000):
-            train_one_epoch(traindataloader, model, optimizer, epoch, args)
-            validate(validdataloader, model, optimizer, epoch, args)
+            # train_one_epoch(traindataloader, model, optimizer, epoch, args)
+            # validate(validdataloader, model, optimizer, epoch, args)
+            train_shuffle_cross_data(loaders, model, optimizer, epoch, args, tensorboardLogger, tags=tags)
+
+
+            validate(validdataloader_300VW, model, optimizer, epoch, args, tensorboardLogger, tag="300VW")
+            validate(validdataloader_style, model, optimizer, epoch, args, tensorboardLogger, tag="Style")
+            validate(validdataloader_lp, model, optimizer, epoch, args, tensorboardLogger, tag="LP")
+            
+
             save_checkpoint({
                 'epoch': epoch,
                 'plfd_backbone': model.state_dict()
@@ -335,12 +570,25 @@ def parse_args():
     parser.add_argument('--step_size', default=60, type=float)
     parser.add_argument('--gamma', default=0.1, type=float)
     parser.add_argument('--resume', default="", type=str)
-
     parser.add_argument('--random_round', default=1, type=int)
     parser.add_argument('--pos_weight', default=64*64, type=int)
-
     parser.add_argument('--random_round_with_gaussian', default=1, type=int)
     parser.add_argument('--mode', default='train', type=str)
+
+    # 
+    parser.add_argument('--vis_dir', default="./vis", type=str)
+    parser.add_argument('--vw300_datadir', default="", type=str)
+    parser.add_argument('--vw300_annotdir', default="", type=str)
+    parser.add_argument('--lp_datadir', default="", type=str)
+    parser.add_argument('--style_datadir', default="", type=str)
+    parser.add_argument('--include_300vw', default=1, type=int)
+    parser.add_argument('--include_style', default=0, type=int)
+    parser.add_argument('--include_lp', default=0, type=int)
+    parser.add_argument('--sampling_data', default=1, type=int)
+    parser.add_argument('--do_train_augment', default=1, type=int)
+    parser.add_argument('--curriculum', default=0, type=int)
+    parser.add_argument('--imgsize', default=256, type=int)
+
 
 
 

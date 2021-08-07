@@ -20,6 +20,8 @@ from torchvision import  transforms
 from datasets.data300VW import VW300 
 from datasets.data300WStyle import W300Style
 from datasets.data300WLP import W300LargePose
+from datasets.datasetMask import DatasetMask
+
 from logger.TensorboardLogger import TensorBoardLogger
 from tqdm import tqdm
 
@@ -94,7 +96,7 @@ def compute_nme(preds, target, typeerr='inter-ocular'):
     return rmse
 
 
-def data_generator(dataloaders, tags=["300VW", "Style", "LP"], args=None):
+def data_generator(dataloaders, tags=["300VW", "Style", "LP", "Mask"], args=None):
     # Total batch
     total_batch = 0
 
@@ -142,11 +144,13 @@ def data_generator(dataloaders, tags=["300VW", "Style", "LP"], args=None):
             yield batch, tags[random_ind]
 
 
-def train_shuffle_cross_data(dataloaders, model, optimizer, epoch, args, tensorboardLogger=None,tags=["Synthesis", "MLR", "LaPa"]):
+def train_shuffle_cross_data(dataloaders, model, optimizer, epoch, args, tensorboardLogger=None,tags=["Synthesis", "MLR", "LaPa", "Mask"]):
     model.train()
     losses300VW = AverageMeter()
     lossesStyle = AverageMeter()
     lossesLP = AverageMeter()
+    lossesMask = AverageMeter()
+
 
 
     num_batch = 0
@@ -180,12 +184,30 @@ def train_shuffle_cross_data(dataloaders, model, optimizer, epoch, args, tensorb
             heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
 
             # Predicted heatmaps
-            heatPRED, lmksPRED = model(img.to(device))
+            heatPRED, lmksPRED, lmks_regression, lmks_regression_end = model(img.to(device))
             heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
 
 
             # Loss Adaptive wingloss
-            loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=y_true_visible_mask)
+            if args.use_visible_mask:
+                loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=y_true_visible_mask)
+            else:
+                loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=None)
+
+             
+            # If use regression loss to force model keep boundary
+            if args.include_regression:
+                lmks_regression = lmks_regression.view(lmks_regression.shape[0],-1, 2)
+                l2_distant = torch.sum((lmksGT.to('cpu')/256.0 - lmks_regression.to('cpu')) * (lmksGT.to('cpu')/256.0 - lmks_regression.to('cpu')), axis=1)
+                l2_distant = torch.mean(l2_distant)
+                loss = loss + l2_distant * 10
+            
+            if args.include_regression_end:
+                lmks_regression_end = lmks_regression_end.view(lmks_regression_end.shape[0],-1, 2)
+                l2_distant = torch.sum((lmksGT.to('cpu')/256.0 - lmks_regression_end.to('cpu')) * (lmksGT.to('cpu')/256.0 - lmks_regression_end.to('cpu')), axis=1)
+                l2_distant = torch.mean(l2_distant)
+                loss = loss + l2_distant * 10
+
 
 
             optimizer.zero_grad()
@@ -198,6 +220,8 @@ def train_shuffle_cross_data(dataloaders, model, optimizer, epoch, args, tensorb
                 lossesStyle.update(loss.item())
             elif tag=="LP":
                 lossesLP.update(loss.item())
+            elif tag=="Mask":
+                lossesMask.update(loss.item())
             else:
                 raise NotImplementedError
             
@@ -208,6 +232,8 @@ def train_shuffle_cross_data(dataloaders, model, optimizer, epoch, args, tensorb
         tensorboardLogger.log(f"train/loss/300VW", losses300VW.avg, epoch)
         tensorboardLogger.log(f"train/loss/Style", lossesStyle.avg, epoch)
         tensorboardLogger.log(f"train/loss/Lp", lossesLP.avg, epoch)
+        tensorboardLogger.log(f"train/loss/Mask", lossesMask.avg, epoch)
+
 
 def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
     model.train()
@@ -249,7 +275,13 @@ def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
             
             # Loss
             loss = loss_heatmap(heatPRED, heatGT)
-    
+
+        
+        # If use regression loss to force model keep boundary
+        if args.include_regression:
+            l2_distant = torch.sum((lmksGT/256.0 - lmksPRED/256.0) * (lmksGT/256.0 - lmksPRED/256.0), axis=1)
+            loss = loss + l2_distant
+
 
         optimizer.zero_grad()
         loss.backward()
@@ -311,7 +343,7 @@ def validate(valdataloader, model, optimizer, epoch, args, tensorboardLogger=Non
         heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
 
         # Inference model to generate heatmap
-        heatPRED, lmksPRED = model(img.to(device))
+        heatPRED, lmksPRED, lmks_regression, lmks_regression_end = model(img.to(device))
 
     
         heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
@@ -377,11 +409,11 @@ def main(args):
     tensorboardLogger = TensorBoardLogger(root="runs", experiment_name=args.snapshot)
 
     # Init model
-    model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1")
+    model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1", usehrnet18=args.use_hrnet18)
     
     if args.resume != "":
         checkpoint = torch.load(args.resume, map_location=device)
-        model.load_state_dict(checkpoint['plfd_backbone'])
+        model.load_state_dict(checkpoint['plfd_backbone'], strict=False)
         model.to(device)
     
     model.to(device)
@@ -446,6 +478,16 @@ def main(args):
                         imgsize=args.imgsize,
                     transforms=None, set_type="val")
 
+    train_mask = DatasetMask(img_dir=args.mask_datadir,
+            anno_dir=args.mask_datadir,
+            augment=True,
+            transforms=transform, set_type="train")
+
+    val_mask = DatasetMask(img_dir=args.mask_datadir,
+            anno_dir=args.mask_datadir,
+            augment=False,
+            transforms=None, set_type="val")
+
     print(f'Len train LP :{len(train_lp)}. len val LP :{len(val_lp)}')
 
     # Dataloader
@@ -492,6 +534,21 @@ def main(args):
         num_workers=2,
         drop_last=True)
 
+    
+    traindataloader_mask = DataLoader(
+        train_mask,
+        batch_size=args.train_batchsize,
+        shuffle=True,
+        num_workers=8,
+        drop_last=True)
+    
+    validdataloader_mask = DataLoader(
+        val_mask,
+        batch_size=args.val_batchsize,
+        shuffle=False,
+        num_workers=2,
+        drop_last=True)
+
     # Optimizer and Scheduler
     optimizer = torch.optim.Adam(
         [{
@@ -517,8 +574,12 @@ def main(args):
         if args.include_lp:
             loaders.append(traindataloader_lp)
             tags.append("LP")
+        
+        if args.include_mask:
+            loaders.append(traindataloader_mask)
+            tags.append("Mask")
 
-        for epoch in range(100000):
+        for epoch in range(300):
             # train_one_epoch(traindataloader, model, optimizer, epoch, args)
             # validate(validdataloader, model, optimizer, epoch, args)
             train_shuffle_cross_data(loaders, model, optimizer, epoch, args, tensorboardLogger, tags=tags)
@@ -527,6 +588,8 @@ def main(args):
             validate(validdataloader_300VW, model, optimizer, epoch, args, tensorboardLogger, tag="300VW")
             validate(validdataloader_style, model, optimizer, epoch, args, tensorboardLogger, tag="Style")
             validate(validdataloader_lp, model, optimizer, epoch, args, tensorboardLogger, tag="LP")
+            validate(validdataloader_mask, model, optimizer, epoch, args, tensorboardLogger, tag="Mask")
+
             
 
             save_checkpoint({
@@ -580,14 +643,24 @@ def parse_args():
     parser.add_argument('--vw300_datadir', default="", type=str)
     parser.add_argument('--vw300_annotdir', default="", type=str)
     parser.add_argument('--lp_datadir', default="", type=str)
+    parser.add_argument('--mask_datadir', default="", type=str)
     parser.add_argument('--style_datadir', default="", type=str)
     parser.add_argument('--include_300vw', default=1, type=int)
     parser.add_argument('--include_style', default=0, type=int)
     parser.add_argument('--include_lp', default=0, type=int)
+    parser.add_argument('--include_mask', default=0, type=int)
     parser.add_argument('--sampling_data', default=1, type=int)
     parser.add_argument('--do_train_augment', default=1, type=int)
     parser.add_argument('--curriculum', default=0, type=int)
     parser.add_argument('--imgsize', default=256, type=int)
+    parser.add_argument('--use_visible_mask', default=1, type=int)
+    parser.add_argument('--use_hrnet18', default=0, type=int)
+    parser.add_argument('--include_regression', default=0, type=int)
+    parser.add_argument('--include_regression_end', default=0, type=int)
+
+
+
+    
 
 
 

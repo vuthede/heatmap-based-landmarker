@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import sys
 sys.path.insert(0,'..')
 from models.mobilenet import mobilenetv2
+from models.hrnet18 import hrnet18
 from torchvision import transforms
 import random
 import numpy as np
@@ -309,6 +310,13 @@ def lmks2heatmap(lmks, random_round=False, random_round_with_gaussian=False):
     
     return heatmap
 
+
+def conv_bn(inp, oup, kernel, stride, padding=1):
+    return nn.Sequential(
+        nn.Conv2d(inp, oup, kernel, stride, padding, bias=False),
+        nn.BatchNorm2d(oup),
+        nn.ReLU(inplace=True))
+
 class BinaryHeadBlock(nn.Module):
     """BinaryHeadBlock
     """
@@ -320,12 +328,34 @@ class BinaryHeadBlock(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(proj_channels, out_channels*2, 1, bias=False),
         )
+
+           # For constraint face shape
+        self.con_conv1 =  conv_bn(136, 136, 3 , 2, 1)  # 32x32
+         
+        self.con_conv2 =  conv_bn(136, 70, 3 , 2, 1) # 16x16
+         
+        self.con_conv3 = conv_bn(70, 35, 3 , 2, 1)  # 8x8
+        
+        self.con_conv4 = conv_bn(35, 35, 3 , 2, 1)  # 4x4
+        
+
+        self.lmks_regress = nn.Linear(35*4*4, 68*2, bias=False)
         
     def forward(self, input):
         N, C, H, W = input.shape
-        binary_heats = self.layers(input).view(N, 2, -1, H, W)
+        fea = self.layers(input)
+        binary_heats = fea.view(N, 2, -1, H, W)
 
-        return binary_heats
+        lmks_end = self.con_conv1(fea)
+        lmks_end = self.con_conv2(lmks_end)
+        lmks_end = self.con_conv3(lmks_end)
+        lmks_end = self.con_conv4(lmks_end)
+        lmks_end = lmks_end.view(lmks_end.size(0), -1)
+        lmks_end = self.lmks_regress(lmks_end)
+
+        
+
+        return binary_heats, lmks_end
 
 class BinaryHeatmap2Coordinate(nn.Module):
     """BinaryHeatmap2Coordinate
@@ -348,28 +378,35 @@ class BinaryHeatmap2Coordinate(nn.Module):
 class HeatmapHead(nn.Module):
     """HeatmapHead
     """
-    def __init__(self):
+    def __init__(self, hrnet18=False):
         super(HeatmapHead, self).__init__()
 
         self.decoder = BinaryHeatmap2Coordinate(topk=18, stride=4)
 
-        self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=68)
+        if hrnet18:
+            self.head = BinaryHeadBlock(in_channels=270, proj_channels=270, out_channels=68)
+        else: # MObile
+            self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=68)
 
     def forward(self, input):
-        binary_heats = self.head(input)
+        binary_heats, lmks_end = self.head(input)
         lmks = self.decoder(binary_heats)
 
         if DEBUG:
             print(f'----------------\nBinary heats shape: {binary_heats.shape}\n----------------------------')
             print(f'----------------\nDecoded lmks shape: {lmks.shape}\n----------------------------')
 
-        return binary_heats, lmks
+        return binary_heats, lmks, lmks_end
+        
         
 class HeatMapLandmarker(nn.Module):
-    def __init__(self, pretrained=False, model_url=None):
+    def __init__(self, pretrained=False, model_url=None, usehrnet18=False):
         super(HeatMapLandmarker, self).__init__()
-        self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
-        self.heatmap_head = HeatmapHead()
+        if usehrnet18:
+            self.backbone = hrnet18(pretrained=pretrained, model_url=model_url)
+        else:
+            self.backbone = mobilenetv2(pretrained=pretrained, model_url=model_url)
+        self.heatmap_head = HeatmapHead(hrnet18=usehrnet18)
         self.transform = transforms.Compose([
             transforms.Resize(256, 256),
             transforms.ToTensor(),
@@ -378,10 +415,12 @@ class HeatMapLandmarker(nn.Module):
     
     
     def forward(self, x):
-        heatmaps, landmark = self.heatmap_head(self.backbone(x))
+        
+        fea, lmks_constraint = self.backbone(x)
+        heatmaps, landmark, lmks_constraint_end = self.heatmap_head(fea)
 
         # Note that the 0 channel indicate background
-        return heatmaps[:,1,...], landmark
+        return heatmaps[:,1,...], landmark, lmks_constraint, lmks_constraint_end
 
 
 def loss_heatmap(gt, pre):
@@ -441,8 +480,8 @@ if __name__ == "__main__":
 
     # Inference model
     x = torch.rand((16, 3, 256, 256))
-    model = HeatMapLandmarker(pretrained=False)
-    heatmaps, lmks = model(x)
+    model = HeatMapLandmarker(pretrained=False, usehrnet18=True)
+    heatmaps, lmks,_,_ = model(x)
     print(f'heat size :{heatmaps.shape}. lmks shape :{lmks.shape}')
     topkheatmap = heatmap2topkheatmap(heatmaps, topk=4)
 
@@ -459,7 +498,7 @@ if __name__ == "__main__":
 
 
     # Loss
-    rme = loss_heatmap(topkheatmap, heatGT)
-    print("Loss:", rme)
+    # rme = loss_heatmap(topkheatmap, heatGT)
+    # print("Loss:", rme)
 
 

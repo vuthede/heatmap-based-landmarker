@@ -93,9 +93,9 @@ def mobilenetv2(pretrained=False, **kwargs):
     return model
 
 
-# if __name__ == "__main__":
-#     x = torch.rand((1, 3, 256,256))
-#     model = mobilenetv2()
-#     a = model(x)
-#     print(a.shape)
+if __name__ == "__main__":
+    x = torch.rand((1, 3, 256,256))
+    model = mobilenetv2()
+    a = model(x)
+    print(a.shape)
 

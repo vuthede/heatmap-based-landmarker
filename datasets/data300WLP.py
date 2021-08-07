@@ -22,7 +22,7 @@ transformerr = A.Compose(
     [
         A.ColorJitter (brightness=0.35, contrast=0.5, saturation=0.5, hue=0.2, always_apply=False, p=0.7),
         # A.ShiftScaleRotate (shift_limit_y=(0.1, 0.4), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.5)
-        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.2, 0.2), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.35)
+        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.3, 0.4), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.5)
 
        
     ], 
@@ -281,37 +281,38 @@ class W300LargePose(data.Dataset):
 #             i +=1
 #     print("total: ", i)
 
-# if __name__ == "__main__":
-#     rstrip_name_data(root="/home/ubuntu/vuthede/landmarkV2/300W-LP/landmarks")
+if __name__ == "__main__":
+    rstrip_name_data(root="/home/ubuntu/vuthede/landmarkV2/300W-LP/landmarks")
 
-#     import torch
+    import torch
 
-# #     transform = transforms.Compose([transforms.ToTensor(),
-# #     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
+#     transform = transforms.Compose([transforms.ToTensor(),
+#     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
 
-#     lapa = W300LargePose(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-#                 anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-#                 augment=True,
-#             transforms=None, set_type="train")
-#     lapa_val = W300LargePose(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-#             anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-#             augment=True,
-#             transforms=None, set_type="val")
+    lapa = W300LargePose(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
+                anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
+                augment=True,
+            transforms=None, set_type="train")
+    lapa_val = W300LargePose(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
+            anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
+            augment=True,
+            transforms=None, set_type="val")
 
-#     print(len(lapa), len(lapa_val))
+    print(len(lapa), len(lapa_val))
 
-#     for img, lmks in lapa:
-#         # img, landmarks = lapa[0]
-#         print(img.shape, lmks.shape)
-        # ok =  landmarks.sahpe
-        # for p in landmarks:
-        #     p = p*256.0
-        #     p = p.astype(int)
+    for img, lmks in lapa:
+        # img, landmarks = lapa[0]
+        print(img.shape, lmks.shape)
+        ok =  landmarks.sahpe
+        for p in landmarks[36:42]:
+            p = p*256.0
+            p = p.astype(int)
 
-        #     img = cv2.circle(img, tuple(p), 1, (255, 0, 0), 1)
+            img = cv2.circle(img, tuple(p), 1, (255, 0, 0), 1)
         
-        # cv2.imwrite("300w-lp.png", img)
+        cv2.imwrite("300w-lp.png", img)
+        break
 
     
 

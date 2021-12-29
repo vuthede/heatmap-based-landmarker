@@ -21,7 +21,7 @@ transformerr = A.Compose(
     [
         A.ColorJitter (brightness=0.35, contrast=0.5, saturation=0.5, hue=0.2, always_apply=False, p=0.7),
         # A.ShiftScaleRotate (shift_limit_y=(0.1, 0.4), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.5)
-        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.3, 0.4), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.5)
+        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.2, 0.2), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.35)
 
        
     ], 
@@ -96,44 +96,39 @@ class W300Style(data.Dataset):
         self.transforms = transforms
         self.augment = augment
 
-        assert set_type in ["train", "val"], "set_type have to be train or val"
+        assert set_type in ["train", "val", "all"], "set_type have to be train or val or all"
 
-        if not os.path.isfile("trainliststyle.npy") or not os.path.isfile("valliststyle.npy"):
-            indoor = []
-            for ext in ["jpg", "png"]:
-                temp = glob.glob(f"{img_dir}/*/*/*/*." + ext)
-                temp = sorted(temp)
-                indoor += temp
+        indoor = []
+        for ext in ["jpg", "png"]:
+            temp = glob.glob(f"{img_dir}/*/*/*/*." + ext)
+            temp = sorted(temp)
+            indoor += temp
 
-            for ext in ["jpg", "png"]:
-                temp = glob.glob(f"{img_dir}/*/*/*." + ext)
-                temp = sorted(temp)
-                indoor += temp
 
-            self.img_path_list = indoor
-            random.Random(777).shuffle(self.img_path_list)
-            if set_type=="train":
-                self.img_path_list = self.img_path_list[0:int(len(self.img_path_list)*0.9)]
-                np.save("trainliststyle.npy", self.img_path_list)
-
-            elif set_type=="val":
-                self.img_path_list = self.img_path_list[int(len(self.img_path_list)*0.9):]
-                np.save("valliststyle.npy", self.img_path_list)
-            
-            else:
-                raise NotImplementedError
+        self.img_path_list = indoor
+        random.Random(777).shuffle(self.img_path_list)
+        if set_type=="train":
+            self.img_path_list = self.img_path_list[0:int(len(self.img_path_list)*0.9)]
+        elif set_type=="val":
+            self.img_path_list = self.img_path_list[int(len(self.img_path_list)*0.9):]
+        elif set_type=="all":
+            pass
         else:
-            if set_type=="train":
-                self.img_path_list = np.load("trainliststyle.npy")
-            elif set_type=="val":
-                self.img_path_list = np.load("valliststyle.npy")
-            else:
-                raise NotImplementedError
+            raise NotImplementedError
+        
 
 
         self.TARGET_IMAGE_SIZE = (imgsize, imgsize)
 
+        # For sampling samples
+        self.sampling_img_path_list = self.img_path_list.copy()
 
+
+    def OnSampling(self, num_sample=20000):
+        self.sampling_img_path_list  = np.random.choice(self.img_path_list, num_sample)
+        
+    def OffSampling(self):
+        self.sampling_img_path_list = self.img_path_list.copy()
     
     def _get_landmarks(self, gt):
         with open(gt, "r") as f:
@@ -177,20 +172,24 @@ class W300Style(data.Dataset):
         return self.__getitem__(random.randint(0, self.__len__()-1))
 
     def  __getitem__(self, index):
+        # print("--------------------\n1")
+        f = self.sampling_img_path_list[index]
 
-        f = self.img_path_list[index]
+        # print("--------------------\n1.0")
+        # print(f)
         self.img = cv2.imread(f)
 
         replacing_extension = ".pts"
         anno = f[:-3] + "pts"
        
-
+    
         self.landmark = self._get_landmarks(anno)
+        # print("2")
 
 
         self.box = None
         if self.box is None:
-            expand_random = random.uniform(0.1, 0.17)
+            expand_random = random.uniform(0.12, 0.4)
             self.box = self.lmks2box(self.landmark, expand_forehead=expand_random)
 
         # If fail then get the default item
@@ -210,9 +209,12 @@ class W300Style(data.Dataset):
         y2 = min(y2, self.img.shape[0]-1)
         self.box = [x1, y1, x2, y2]
 
+        # print("2.1")
 
         if self.augment:
             transformed = transformerr(image=self.img, bboxes=[self.box], category_ids=category_ids,keypoints= self.landmark )
+            # print("2.2")
+
             imgT = np.array(transformed["image"])
             boxes = np.array(transformed["bboxes"])
             lmks = np.array(transformed["keypoints"])
@@ -225,14 +227,16 @@ class W300Style(data.Dataset):
                 box = boxes[0]
                 lmks = lmks
             else:
-                # print("Augment not success!!!!!!!!")
                 imgT = self.img
                 box = self.box
                 lmks = self.landmark
+            # print("2.3")
+            
         else:
             imgT = self.img
             box = self.box
             lmks = self.landmark
+        # print("3")
 
        
         assert  (lmks.shape == self.landmark.shape), f'Lmks Should have shape {self.landmark.shape}'
@@ -254,33 +258,81 @@ class W300Style(data.Dataset):
         if self.transforms is not None:
             imgT = self.transforms(imgT)  # Normalize, et
         
-        return imgT, lmks
+        # print("4")
+
+        return imgT, lmks, "Style"
 
         # return None, None
 
-    
 
     def __len__(self):
-        return len(self.img_path_list)
+        return len(self.sampling_img_path_list)
 
 
-# if __name__ == "__main__":
-#     import torch
-
-#     transform = transforms.Compose([transforms.ToTensor(),
-#     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
 
-#     lapa = W300Style(img_dir="/vinai/devt/landmarkV2/300W-Convert",
-#                 anno_dir="/vinai/devt/landmarkV2/300W-Convert",
-#                 augment=True,
-#             transforms=None, set_type="train")
-#     lapa_val = W300Style(img_dir="/vinai/devt/landmarkV2/300W-Convert",
-#             anno_dir="/vinai/devt/landmarkV2/300W-Convert",
-#             augment=True,
-#             transforms=None, set_type="val")
+if __name__ == "__main__":
+    # img_path = "/home/ubuntu/vuthede/landmarkV2/300W-Convert/300W-Gray/300W/02_Outdoor/outdoor_034.jpg"
+    # import time
+    # for i in range(1000000):
+    #     t1 = time.time()
+    #     img = cv2.imread(img_path)
+    #     print("img.shape: ", img.shape)
+    #     print("Time: ", (time.time()-t1)*1000.0, "(ms)")
 
-#     print(len(lapa), len(lapa_val))
+    import torch
+
+    transform = transforms.Compose([transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
+
+    imgsize = 256
+    lapa = W300Style(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-Convert",
+                anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-Convert",
+                augment=False,
+                imgsize=imgsize,
+            transforms=None, set_type="all")
+    # lapa_val = W300Style(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-Convert",
+    #         anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-Convert",
+    #         augment=True,
+    #         transforms=None, set_type="val")
+
+    print(len(lapa))    
+    lapa.OnSampling(num_sample=1000)
+    print(len(lapa))    
+    lapa.OffSampling()
+    print(len(lapa))   
+    
+    i = 0
+    crop_style = "cropstyle"
+    from tqdm import tqdm
+
+    if not os.path.isdir(crop_style):
+        os.makedirs(crop_style)
+
+    for img, lmk, tag in tqdm(lapa):
+        i+=1
+        print(i)
+        
+        cv2.imwrite(f'{crop_style}/{i}.png', img)
+
+        with open(f'{crop_style}/{i}.txt', 'w') as f:
+            lmk = lmk.flatten()*float(imgsize)
+            lmk_str = [str(l) for l in lmk]
+            line = ",".join(lmk_str)
+            f.write(line)
+
+
+
+
+
+
+
+
+
+
+
+
+    # print(len(lapa), len(lapa_val))
 
 #     img, landmarks = lapa[0]
 #     print(img.shape, landmarks.shape)

@@ -23,6 +23,7 @@ transformerr = A.Compose(
         A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.1, 0.1), scale_limit=0.05, rotate_limit=10, interpolation=1, border_mode=1, always_apply=False, p=0.5)
        
     ], 
+    
     keypoint_params=A.KeypointParams(format='xy', remove_invisible=False)
 )
 
@@ -106,6 +107,15 @@ class DatasetMask(data.Dataset):
      
         self.TARGET_IMAGE_SIZE = (imgsize, imgsize)
 
+        # For sampling samples
+        self.sampling_img_path_list = self.img_path_list.copy()
+
+    
+    def OnSampling(self, num_sample=20000):
+        self.sampling_img_path_list  = np.random.choice(self.img_path_list, num_sample)
+        
+    def OffSampling(self):
+        self.sampling_img_path_list = self.img_path_list.copy()
 
     
     def _get_landmarks(self, gt):
@@ -127,7 +137,7 @@ class DatasetMask(data.Dataset):
 
     def  __getitem__(self, index):
 
-        f = self.img_path_list[index]
+        f = self.sampling_img_path_list[index]
         self.img = cv2.imread(f)
 
         anno = f.replace("_surgical", "").replace("_cloth", "").replace("png", "txt")
@@ -140,8 +150,6 @@ class DatasetMask(data.Dataset):
            np.max(self.landmark[:,0]) >= self.img.shape[1]  or \
            np.max(self.landmark[:,1]) >= self.img.shape[0] :
            return self.__get_default_item()
-
-
 
 
         if self.augment:
@@ -175,13 +183,13 @@ class DatasetMask(data.Dataset):
         if self.transforms is not None:
             imgT = self.transforms(imgT)  # Normalize, et
         
-        return imgT, lmks
+        return imgT, lmks,  "Mask"
 
 
     
 
     def __len__(self):
-        return len(self.img_path_list)
+        return len(self.sampling_img_path_list)
 
 
 if __name__ == "__main__":
@@ -191,22 +199,27 @@ if __name__ == "__main__":
 #     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
 
-    mask = DatasetMask(img_dir="/home/ubuntu/vuthede/random_samples_20k_masked",
+    lapa = DatasetMask(img_dir="/home/ubuntu/vuthede/random_samples_20k_masked",
                 anno_dir="/home/ubuntu/vuthede/random_samples_20k_masked",
                 augment=True,
                 transforms=None, set_type="train")
     
 
+    print(len(lapa))    
+    lapa.OnSampling(num_sample=1000)
+    print(len(lapa))    
+    lapa.OffSampling()
+    print(len(lapa))   
     
-    img, landmarks = mask[0]
-    print(img.shape, landmarks.shape)
-    for p in landmarks:
-        p = p*256.0
-        p = p.astype(int)
+    # img, landmarks = mask[0]
+    # print(img.shape, landmarks.shape)
+    # for p in landmarks:
+    #     p = p*256.0
+    #     p = p.astype(int)
 
-        img = cv2.circle(img, tuple(p), 1, (255, 0, 0), 1)
+    #     img = cv2.circle(img, tuple(p), 1, (255, 0, 0), 1)
     
-    cv2.imwrite("mask.png", img)
+    # cv2.imwrite("mask.png", img)
 
     
 

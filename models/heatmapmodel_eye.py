@@ -330,7 +330,7 @@ class BinaryHeadBlock(nn.Module):
         )
 
            # For constraint face shape
-        self.con_conv1 =  conv_bn(136, 136, 3 , 2, 1)  # 32x32
+        self.con_conv1 =  conv_bn(24, 136, 3 , 2, 1)  # 32x32
          
         self.con_conv2 =  conv_bn(136, 70, 3 , 2, 1) # 16x16
          
@@ -386,7 +386,9 @@ class HeatmapHead(nn.Module):
         if hrnet18:
             self.head = BinaryHeadBlock(in_channels=270, proj_channels=270, out_channels=68)
         else: # MObile
-            self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=68)
+            # self.head = BinaryHeadBlock(in_channels=152, proj_channels=152, out_channels=68)
+            self.head = BinaryHeadBlock(in_channels=152, proj_channels=24, out_channels=12)
+
 
     def forward(self, input):
         binary_heats, lmks_end = self.head(input)

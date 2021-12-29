@@ -13,15 +13,18 @@ import sys
 from models.heatmapmodel import HeatMapLandmarker,\
      heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, cross_loss_entropy_heatmap,\
                      heatmap2softmaxheatmap, heatmap2sigmoidheatmap, adaptive_wing_loss
+# from models.heatmapmodel_eye import HeatMapLandmarker,\
+#      heatmap2coord, heatmap2topkheatmap, lmks2heatmap, loss_heatmap, cross_loss_entropy_heatmap,\
+#                      heatmap2softmaxheatmap, heatmap2sigmoidheatmap, adaptive_wing_loss
 # from datasets.dataLAPA106 import LAPA106DataSet
 from torchvision import  transforms
 
-
 from datasets.data300VW import VW300 
-from datasets.data300WStyle import W300Style
+# from datasets.data300WStyle import W300Style
+from datasets.dataset300WCropStyle import CropStyleDataSet as W300Style
 from datasets.data300WLP import W300LargePose
 from datasets.datasetMask import DatasetMask
-
+from datasets.datasetVinAI import VinAILandmarkerDataSet
 from logger.TensorboardLogger import TensorBoardLogger
 from tqdm import tqdm
 
@@ -235,66 +238,90 @@ def train_shuffle_cross_data(dataloaders, model, optimizer, epoch, args, tensorb
         tensorboardLogger.log(f"train/loss/Mask", lossesMask.avg, epoch)
 
 
-def train_one_epoch(traindataloader, model, optimizer, epoch, args=None):
+def train_one_epoch(traindataloader, model, optimizer, epoch, args=None,tensorboardLogger=None):
     model.train()
     losses = AverageMeter()
     num_batch = len(traindataloader)
     i = 0
 
-    for img, lmksGT in traindataloader:
-        i += 1
-       
-        # img shape: B x 3 x 256 x 256
-        # NORMALZIED lmks shape: B x 106 x 256 x 256
-        img = img.to(device)
+    tags = "AllSet"
+    with tqdm(traindataloader, unit="batch") as tepoch:
+        for img, lmksGT, _ in tepoch:
+            i +=1
+            # if i ==5:
+            #     break
 
-        # Denormalize lmks
-        lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
-        lmksGT = lmksGT * 256  
-        
-        # Generate GT heatmap by randomized rounding
-        heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
+            tepoch.set_description(f"Epoch {epoch}")
+            img = img.to(device)
+            # print("Yo111")
+           # Groundtruth heatmaps
+            lmksGT = lmksGT.view(lmksGT.shape[0],-1, 2)
+            x_ok = torch.logical_and(lmksGT[:,:,0] >= 0,  lmksGT[:,:,0] <= 1)
+            y_ok = torch.logical_and(lmksGT[:,:,1] >= 0,  lmksGT[:,:,1] <= 1)
+            y_true_visible_mask = torch.logical_and(x_ok, y_ok)
+            y_true_visible_mask = torch.unsqueeze(y_true_visible_mask, -1)
+            y_true_visible_mask = torch.unsqueeze(y_true_visible_mask, -1)
 
-        # Inference model to generate heatmap
-        heatPRED, lmksPRED = model(img.to(device))
+            lmksGT = lmksGT * 256  
+            # print("Yo222")
 
+            heatGT = lmks2heatmap(lmksGT, args.random_round, args.random_round_with_gaussian)  
 
-        if args.random_round_with_gaussian:
+            # Predicted heatmaps
+            # print("Yo333")
+
+            heatPRED, lmksPRED, lmks_regression, lmks_regression_end = model(img.to(device))
             heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
-            loss = adaptive_wing_loss(heatPRED, heatGT)
 
-        elif args.random_round: #Using cross loss entropy
-            heatPRED = heatPRED.to('cpu')
-            loss = cross_loss_entropy_heatmap(heatPRED, heatGT, pos_weight=torch.Tensor([args.pos_weight]))
-        else:
-            # MSE loss
-            if (args.get_topk_in_pred_heats_training):
-                heatPRED = heatmap2topkheatmap(heatPRED.to('cpu'))
+
+            # Loss Adaptive wingloss
+            if args.use_visible_mask:
+                if args.only_eyeregion:
+                    eye_index = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+                    # loss = adaptive_wing_loss(heatPRED[:,eye_index,:,:], heatGT[:,eye_index,:,:], y_true_visible_mask=y_true_visible_mask[:,eye_index,:,:])
+                    loss = adaptive_wing_loss(heatPRED, heatGT[:,eye_index,:,:], y_true_visible_mask=y_true_visible_mask[:,eye_index,:,:])
+
+                else:
+                    loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=y_true_visible_mask)
             else:
-                heatPRED = heatmap2softmaxheatmap(heatPRED.to('cpu'))
+                if args.only_eyeregion:
+                    eye_index = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+                    # loss = adaptive_wing_loss(heatPRED[:,eye_index,:,:], heatGT[:,eye_index,:,:], y_true_visible_mask=None)
+                    loss = adaptive_wing_loss(heatPRED, heatGT[:,eye_index,:,:], y_true_visible_mask=None)
+
+                
+                else:
+                    loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=None)
+
+            assert args.include_regression == 0, "Currently include regression have not support due to lazy"  
+            # If use regression loss to force model keep boundary
+            if args.include_regression:
+                lmks_regression = lmks_regression.view(lmks_regression.shape[0],-1, 2)
+                l2_distant = torch.sum((lmksGT.to('cpu')/256.0 - lmks_regression.to('cpu')) * (lmksGT.to('cpu')/256.0 - lmks_regression.to('cpu')), axis=1)
+                l2_distant = torch.mean(l2_distant)
+                loss = loss + l2_distant * 10
             
-            # Loss
-            loss = loss_heatmap(heatPRED, heatGT)
-
-        
-        # If use regression loss to force model keep boundary
-        if args.include_regression:
-            l2_distant = torch.sum((lmksGT/256.0 - lmksPRED/256.0) * (lmksGT/256.0 - lmksPRED/256.0), axis=1)
-            loss = loss + l2_distant
+            if args.include_regression_end:
+                lmks_regression_end = lmks_regression_end.view(lmks_regression_end.shape[0],-1, 2)
+                l2_distant = torch.sum((lmksGT.to('cpu')/256.0 - lmks_regression_end.to('cpu')) * (lmksGT.to('cpu')/256.0 - lmks_regression_end.to('cpu')), axis=1)
+                l2_distant = torch.mean(l2_distant)
+                loss = loss + l2_distant * 10
 
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        losses.update(loss.item())
-        print(f"Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {i} / {num_batch} batches. Loss: {loss.item()}")
+            losses.update(loss.item())
+            print(f"Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {i} / {num_batch} batches. Loss: {loss.item()}")
 
-    return losses.avg
+        tensorboardLogger.log(f"train/loss", losses.avg, epoch)
+
+        return losses.avg
 
     
 
-def validate(valdataloader, model, optimizer, epoch, args, tensorboardLogger=None,tag="300VW"):
+def validate(valdataloader, model, optimizer, epoch, args, tensorboardLogger=None):
     if not os.path.isdir(args.snapshot):
         os.makedirs(args.snapshot)
 
@@ -312,7 +339,7 @@ def validate(valdataloader, model, optimizer, epoch, args, tensorboardLogger=Non
     nme_interocular = []
     nme_interpupil = []
 
-    for img, lmksGT in valdataloader:
+    for img, lmksGT, tag in valdataloader:
         img = np.array(img)
         batch += 1
 
@@ -347,35 +374,41 @@ def validate(valdataloader, model, optimizer, epoch, args, tensorboardLogger=Non
 
     
         heatPRED = heatmap2sigmoidheatmap(heatPRED.to('cpu'))
-        loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=y_true_visible_mask)
+        if args.only_eyeregion:
+            eye_index = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+            # loss = adaptive_wing_loss(heatPRED[:,eye_index,:,:], heatGT[:,eye_index,:,:], y_true_visible_mask=y_true_visible_mask[:,eye_index,:,:])
+            loss = adaptive_wing_loss(heatPRED, heatGT[:,eye_index,:,:], y_true_visible_mask=None)
+
+        else:
+            loss = adaptive_wing_loss(heatPRED, heatGT, y_true_visible_mask=y_true_visible_mask)
 
     
         
         # Loss
-        loss = loss_heatmap(heatPRED, heatGT)
+        # loss = loss_heatmap(heatPRED, heatGT)
 
         if batch < num_vis_batch:
             vis_prediction_batch(batch, img_ori, lmksPRED, output=args.vis_dir)
 
 
         # Loss
-        nme_interocular_batch = list(compute_nme(lmksPRED, lmksGT, typeerr='inter-ocular'))
-        nme_interpupil_batch = list(compute_nme(lmksPRED, lmksGT, typeerr='inter-pupil'))
+        # nme_interocular_batch = list(compute_nme(lmksPRED, lmksGT, typeerr='inter-ocular'))
+        # nme_interpupil_batch = list(compute_nme(lmksPRED, lmksGT, typeerr='inter-pupil'))
 
 
-        nme_interocular += nme_interocular_batch
-        nme_interpupil += nme_interpupil_batch
+        # nme_interocular += nme_interocular_batch
+        # nme_interpupil += nme_interpupil_batch
 
 
         losses.update(loss.item())
-        message = f"VAldiation Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {batch} / {num_batch} batches. Loss: {loss.item()}.  NME_ocular :{np.mean(nme_interocular_batch)}. NME_pupil :{np.mean(nme_interpupil_batch)}"
-        print(message)
+        # message = f"VAldiation Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']} Batch {batch} / {num_batch} batches. Loss: {loss.item()}.  NME_ocular :{np.mean(nme_interocular_batch)}. NME_pupil :{np.mean(nme_interpupil_batch)}"
+        # print(message)
     
-    message = f" Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']}. Loss :{losses.avg}. NME_ocular :{np.mean(nme_interocular)}. NME_pupil :{np.mean(nme_interpupil)}"
-    logFile.write(message + "\n")
+    # message = f" Epoch:{epoch}. Lr:{optimizer.param_groups[0]['lr']}. Loss :{losses.avg}. NME_ocular :{np.mean(nme_interocular)}. NME_pupil :{np.mean(nme_interpupil)}"
+    # logFile.write(message + "\n")
 
     tensorboardLogger.log(f"val/loss/{tag}", losses.avg, epoch)
-    tensorboardLogger.log(f"val/nme_ocular/{tag}", np.mean(nme_interocular), epoch)
+    # tensorboardLogger.log(f"val/nme_ocular/{tag}", np.mean(nme_interocular), epoch)
 
     return losses.avg
 
@@ -409,7 +442,7 @@ def main(args):
     tensorboardLogger = TensorBoardLogger(root="runs", experiment_name=args.snapshot)
 
     # Init model
-    model = HeatMapLandmarker(pretrained=True, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1", usehrnet18=args.use_hrnet18)
+    model = HeatMapLandmarker(pretrained=False, model_url="https://www.dropbox.com/s/47tyzpofuuyyv1b/mobilenetv2_1.0-f2a8633.pth.tar?dl=1", usehrnet18=args.use_hrnet18)
     
     if args.resume != "":
         checkpoint = torch.load(args.resume, map_location=device)
@@ -419,28 +452,6 @@ def main(args):
     model.to(device)
 
   
-
-    # # Train dataset, valid dataset
-    # train_dataset = LAPA106DataSet(img_dir=f'{args.dataroot}/images', anno_dir=f'{args.dataroot}/landmarks', augment=True,
-    # transforms=transform)
-    # val_dataset = LAPA106DataSet(img_dir=f'{args.val_dataroot}/images', anno_dir=f'{args.val_dataroot}/landmarks')
-
-    # # Dataloader
-    # traindataloader = DataLoader(
-    #     train_dataset,
-    #     batch_size=args.train_batchsize,
-    #     shuffle=True,
-    #     num_workers=2,
-    #     drop_last=True)
-
-    
-    # validdataloader = DataLoader(
-    #     val_dataset,
-    #     batch_size=args.val_batchsize,
-    #     shuffle=False,
-    #     num_workers=2,
-    #     drop_last=True)
-
     train_300VW = VW300(img_dir=args.vw300_datadir,
                         anno_dir=args.vw300_annotdir,
                         augment=args.do_train_augment,
@@ -478,76 +489,49 @@ def main(args):
                         imgsize=args.imgsize,
                     transforms=None, set_type="val")
 
-    train_mask = DatasetMask(img_dir=args.mask_datadir,
-            anno_dir=args.mask_datadir,
-            augment=True,
-            transforms=transform, set_type="train")
-
-    val_mask = DatasetMask(img_dir=args.mask_datadir,
-            anno_dir=args.mask_datadir,
+    # Mask and VinAI dataset
+    train_mask = DatasetMask(img_dir=args.dataset_mask,
+                anno_dir=args.dataset_mask,
+                augment=True,
+                imgsize=args.imgsize,
+                transforms=transform, set_type="train")
+    
+    val_mask = DatasetMask(img_dir=args.dataset_mask,
+            anno_dir=args.dataset_mask, 
             augment=False,
+            imgsize=args.imgsize,
             transforms=None, set_type="val")
 
-    print(f'Len train LP :{len(train_lp)}. len val LP :{len(val_lp)}')
+    train_vinai =  VinAILandmarkerDataSet(img_dir=args.dataset_vinai,
+                                        anno_file=args.dataset_vinai+"/labels/landmark_annotations.txt",
+                                        augment=True,
+                                        imgsize=args.imgsize,
+                                        transforms=transform, set_type="train")
+    
+    val_vinai =  VinAILandmarkerDataSet(img_dir=args.dataset_vinai,
+                                        anno_file=args.dataset_vinai+"/labels/landmark_annotations.txt",
+                                        augment=False,
+                                        imgsize=args.imgsize,
+                                        transforms=None, set_type="val")
 
-    # Dataloader
-    traindataloader_300VW = DataLoader(
-        train_300VW,
-        batch_size=args.train_batchsize,
-        shuffle=True,
-        num_workers=8,
-        drop_last=True)
-    
-    validdataloader_300VW = DataLoader(
-        val_300VW,
-        batch_size=args.val_batchsize,
-        shuffle=False,
-        num_workers=2,
-        drop_last=True)
-    
-    traindataloader_style = DataLoader(
-        train_style,
-        batch_size=args.train_batchsize,
-        shuffle=True,
-        num_workers=8,
-        drop_last=True)
-    
-    validdataloader_style = DataLoader(
-        val_style,
-        batch_size=args.val_batchsize,
-        shuffle=False,
-        num_workers=2,
-        drop_last=True)
 
-    
-    traindataloader_lp = DataLoader(
-        train_lp,
-        batch_size=args.train_batchsize,
-        shuffle=True,
-        num_workers=8,
-        drop_last=True)
-    
-    validdataloader_lp = DataLoader(
-        val_lp,
-        batch_size=args.val_batchsize,
-        shuffle=False,
-        num_workers=2,
-        drop_last=True)
 
-    
-    traindataloader_mask = DataLoader(
-        train_mask,
-        batch_size=args.train_batchsize,
-        shuffle=True,
-        num_workers=8,
-        drop_last=True)
-    
-    validdataloader_mask = DataLoader(
-        val_mask,
-        batch_size=args.val_batchsize,
-        shuffle=False,
-        num_workers=2,
-        drop_last=True)
+    train_datasets = []
+    if args.include_300vw:
+        print(f'Len train 300vw :{len(train_300VW)}. len val 300w :{len(val_300VW)}')
+        train_datasets.append(train_300VW)
+    if args.include_style:
+        print(f'Len train style :{len(train_style)}. len val Style :{len(val_style)}')
+        train_datasets.append(train_style)
+    if args.include_lp:
+        print(f'Len train LP :{len(train_lp)}. len val LP :{len(val_lp)}')
+        train_datasets.append(train_lp)
+    if args.include_mask:
+        print(f'Len train mask :{len(train_mask)}. len val mask :{len(val_mask)}')
+        train_datasets.append(train_mask)
+    if args.include_vinai:
+        print(f'Len train vinai :{len(train_mask)}. len val vinai :{len(val_vinai)}')
+        train_datasets.append(train_vinai)
 
     # Optimizer and Scheduler
     optimizer = torch.optim.Adam(
@@ -557,38 +541,40 @@ def main(args):
         lr=args.lr,
         weight_decay=1e-6)
 
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size ,gamma=args.gamma)
+    
+    if args.consin_lr_scheduler:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.max_num_epoch)
+    else:
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size ,gamma=args.gamma)
     
     # for im, lm in train_dataset:
     #     print(type(im), lm.shape)
 
     if args.mode == 'train':
-        loaders = []
-        tags = []
-        if args.include_300vw:
-            loaders.append(traindataloader_300VW)
-            tags.append("300VW")
-        if args.include_style:
-            loaders.append(traindataloader_style)
-            tags.append("Style")
-        if args.include_lp:
-            loaders.append(traindataloader_lp)
-            tags.append("LP")
-        
-        if args.include_mask:
-            loaders.append(traindataloader_mask)
-            tags.append("Mask")
-
         for epoch in range(300):
             # train_one_epoch(traindataloader, model, optimizer, epoch, args)
             # validate(validdataloader, model, optimizer, epoch, args)
-            train_shuffle_cross_data(loaders, model, optimizer, epoch, args, tensorboardLogger, tags=tags)
+            # train_shuffle_cross_data(loaders, model, optimizer, epoch, args, tensorboardLogger, tags=tags)
+             # Data set sampleing
+            # print("Yo000")
+            
+            if args.sampling_data:
+                for  i in range(len(train_datasets)):
+                    train_datasets[i].OnSampling(num_sample=args.num_batch_per_dataset*args.train_batchsize)
+            
+            # print("Yo001")
+
+            train_all_datasets = torch.utils.data.ConcatDataset(train_datasets)
+            traindataloader = DataLoader(train_all_datasets, batch_size=args.train_batchsize, shuffle=True, num_workers=10, drop_last=True)
+            # print("Yo002")
+
+            # Train    
+            train_one_epoch(traindataloader, model, optimizer, epoch, args, tensorboardLogger)
 
 
-            validate(validdataloader_300VW, model, optimizer, epoch, args, tensorboardLogger, tag="300VW")
-            validate(validdataloader_style, model, optimizer, epoch, args, tensorboardLogger, tag="Style")
-            validate(validdataloader_lp, model, optimizer, epoch, args, tensorboardLogger, tag="LP")
-            validate(validdataloader_mask, model, optimizer, epoch, args, tensorboardLogger, tag="Mask")
+            for val_dataset in [val_300VW, val_lp, val_mask, val_vinai]:
+                validdataloader =  DataLoader(val_dataset, batch_size=args.val_batchsize, shuffle=True, num_workers=2, drop_last=True)
+                validate(validdataloader, model, optimizer, epoch, args, tensorboardLogger)
 
             
 
@@ -614,18 +600,6 @@ def parse_args():
 
     parser.add_argument(
         '--log_file', default="log.txt", type=str)
-
-    # --dataset
-    parser.add_argument(
-        '--dataroot',
-        default='/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/train',
-        type=str,
-        metavar='PATH')
-    parser.add_argument(
-        '--val_dataroot',
-        default='/media/vuthede/7d50b736-6f2d-4348-8cb5-4c1794904e86/home/vuthede/data/LaPa/val',
-        type=str,
-        metavar='PATH')
     parser.add_argument('--train_batchsize', default=16, type=int)
     parser.add_argument('--val_batchsize', default=8, type=int)
     parser.add_argument('--get_topk_in_pred_heats_training', default=0, type=int)
@@ -637,19 +611,20 @@ def parse_args():
     parser.add_argument('--pos_weight', default=64*64, type=int)
     parser.add_argument('--random_round_with_gaussian', default=1, type=int)
     parser.add_argument('--mode', default='train', type=str)
-
-    # 
     parser.add_argument('--vis_dir', default="./vis", type=str)
     parser.add_argument('--vw300_datadir', default="", type=str)
     parser.add_argument('--vw300_annotdir', default="", type=str)
     parser.add_argument('--lp_datadir', default="", type=str)
-    parser.add_argument('--mask_datadir', default="", type=str)
     parser.add_argument('--style_datadir', default="", type=str)
+    parser.add_argument('--dataset_mask', default="", type=str)
+    parser.add_argument('--dataset_vinai', default="", type=str)
     parser.add_argument('--include_300vw', default=1, type=int)
     parser.add_argument('--include_style', default=0, type=int)
-    parser.add_argument('--include_lp', default=0, type=int)
     parser.add_argument('--include_mask', default=0, type=int)
+    parser.add_argument('--include_vinai', default=0, type=int)
+    parser.add_argument('--include_lp', default=0, type=int)
     parser.add_argument('--sampling_data', default=1, type=int)
+    parser.add_argument('--sampling_data_by_base_num_sample', default=0, type=int)
     parser.add_argument('--do_train_augment', default=1, type=int)
     parser.add_argument('--curriculum', default=0, type=int)
     parser.add_argument('--imgsize', default=256, type=int)
@@ -657,6 +632,10 @@ def parse_args():
     parser.add_argument('--use_hrnet18', default=0, type=int)
     parser.add_argument('--include_regression', default=0, type=int)
     parser.add_argument('--include_regression_end', default=0, type=int)
+    parser.add_argument('--consin_lr_scheduler', default=0, type=int) # Default is stepLR
+    parser.add_argument('--max_num_epoch', default=100, type=int) # Max number of epochs
+    parser.add_argument('--num_batch_per_dataset', default=615, type=int)  # With batchsize=32  ==> numsample ~~ 20000 per dataset
+    parser.add_argument('--only_eyeregion', default=0, type=int)  
 
 
 

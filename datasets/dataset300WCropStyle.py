@@ -6,30 +6,24 @@ sys.path.append('..')
 from torch.utils import data
 import glob
 import os
-#import mxnet as mx
-
 import albumentations as A
 import imgaug.augmenters as iaa
 from torchvision import  transforms
 import ast
 import random
 import math
-import scipy.io
 
 # Declare an augmentation pipeline
 category_ids = [0]
 transformerr = A.Compose(
     [
         A.ColorJitter (brightness=0.35, contrast=0.5, saturation=0.5, hue=0.2, always_apply=False, p=0.7),
-        # A.ShiftScaleRotate (shift_limit_y=(0.1, 0.4), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.5)
-        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.2, 0.2), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.35)
-
+        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.1, 0.1), scale_limit=0.05, rotate_limit=10, interpolation=1, border_mode=1, always_apply=False, p=0.5)
        
     ], 
     bbox_params=A.BboxParams(format='pascal_voc', label_fields=['category_ids']),
     keypoint_params=A.KeypointParams(format='xy', remove_invisible=False)
 )
-
 
 
 def square_box(box, ori_shape, lmks, expand=1.25):
@@ -86,82 +80,55 @@ def rotate(angle, center, landmark):
     return M, landmark_
 
 
-
-class W300LargePose(data.Dataset):
+class CropStyleDataSet(data.Dataset):
     TARGET_IMAGE_SIZE = (256, 256)
 
 
     def __init__(self, img_dir, anno_dir, augment=False, transforms=None, imgsize=256, set_type="train"):
         self.img_dir = img_dir
-        self.anno_dir = anno_dir
+        self.anno_file = anno_dir
         self.transforms = transforms
         self.augment = augment
 
-        assert set_type in ["train", "val"], "set_type have to be train or val"
 
-        if not os.path.isfile("trainlistlargepose.npy") or not os.path.isfile("vallistlargepose.npy"):
-            indoor = []
-            for ext in ["jpg", "png"]:
-                temp = glob.glob(f"{img_dir}/*/*." + ext)
-                temp = sorted(temp)
-                indoor += temp
+        assert set_type in ["train", "val", "all"], "set_type have to be train or val or all"
+        self.pngs = glob.glob(f'{img_dir}/*.png')
 
-            for ext in ["jpg", "png"]:
-                temp = glob.glob(f"{img_dir}/*/*/*." + ext)
-                temp = sorted(temp)
-                indoor += temp
+        if set_type == 'train':
+            self.pngs = self.pngs[:int(0.95*len(self.pngs))]
 
-            self.img_path_list = indoor
-
-            self.img_path_list = indoor
-            random.Random(777).shuffle(self.img_path_list)
-            if set_type=="train":
-                self.img_path_list = self.img_path_list[0:int(len(self.img_path_list)*0.9)]
-                np.save("trainlistlargepose.npy", self.img_path_list)
-
-            elif set_type=="val":
-                self.img_path_list = self.img_path_list[int(len(self.img_path_list)*0.9):]
-                np.save("vallistlargepose.npy", self.img_path_list)
-            
-            else:
-                raise NotImplementedError
-        else:
-            if set_type=="train":
-                self.img_path_list = np.load("trainlistlargepose.npy")
-            elif set_type=="val":
-                self.img_path_list = np.load("vallistlargepose.npy")
-            else:
-                raise NotImplementedError
+        elif set_type == 'val':
+            self.pngs = self.pngs[int(0.95*len(self.pngs)):]
 
 
         self.TARGET_IMAGE_SIZE = (imgsize, imgsize)
 
         # For sampling samples
-        self.sampling_img_path_list = self.img_path_list.copy()
-
-
+        self.samling_pngs = self.pngs.copy()
+        
+    
     def OnSampling(self, num_sample=20000):
-        self.sampling_img_path_list  = np.random.choice(self.img_path_list, num_sample)
+        indices = np.random.choice(list(range(len(self.pngs))), num_sample)
+        self.samling_pngs = np.array(self.pngs)[indices]
+
         
     def OffSampling(self):
-        self.sampling_img_path_list = self.img_path_list.copy()
+        self.samling_pngs = self.pngs.copy()
+
+    def _get_landmarks(self, anno_file):
+        with open(anno_file, 'r') as f:
+            line  = f.readline()
+            line_pt = line.split(",")
+            line_pt = [float(i) for i in line_pt]
+            lmks = np.array(line_pt)
+
+            lmks = lmks.reshape(-1,2)
+
+            assert lmks.shape==(68,2) , "Number lmks should be equal to 68"
+
+            return lmks
 
 
-
-    
-    def _get_landmarks(self, gt):
-        lmk = [-1] * 68*2
-        mat = scipy.io.loadmat(gt)
-        for i, _lmk in enumerate(mat["pts_2d"]):
-            lmk[i*2] = _lmk[0]
-            lmk[i*2 + 1] = _lmk[1]
-
-        lmk = np.array(lmk)
-        lmk = np.reshape(lmk,(-1,2))
-        assert len(lmk)==68, f"There should be 106 landmarks. Get {len(lmk)}"
-        return lmk
-
-    
     def lmks2box(self, lmks, expand_forehead=0.2):
         xy = np.min(self.landmark, axis=0).astype(np.int32) 
         zz = np.max(self.landmark, axis=0).astype(np.int32)
@@ -190,18 +157,11 @@ class W300LargePose(data.Dataset):
 
     def  __getitem__(self, index):
 
-        f = self.sampling_img_path_list[index]
-
+        f = self.samling_pngs[index]
         self.img = cv2.imread(f)
+        self.landmark = self._get_landmarks(f.replace(".png", ".txt"))
 
-        # print("fffffff: ", f)
-        d = f.split("/")[-2]
-        anno = self.img_dir +  "/landmarks/" + d + "/" + os.path.basename(f[:-4]) + "_pts.mat"
-        anno = anno.replace(" ","")
-        # print("anoooo: ", anno)
-        self.landmark = self._get_landmarks(anno)
-        # print(f'Num lmks: {self.landmark.shape}')
-
+        # print("landmark shappe: ", self.landmark)
 
         self.box = None
         if self.box is None:
@@ -269,73 +229,47 @@ class W300LargePose(data.Dataset):
         if self.transforms is not None:
             imgT = self.transforms(imgT)  # Normalize, et
         
-        return imgT, lmks, "LP"
+        return imgT, lmks, "Style"
 
         # return None, None
 
     
 
     def __len__(self):
-        return len(self.sampling_img_path_list)
+        return len(self.samling_pngs)
 
-# from tqdm import tqdm
-# def rstrip_name_data(root="/home/ubuntu/vuthede/landmarkV2/300W-LP/landmarks"):
-#     files = glob.glob(root + "/*/*.mat")
-
-#     i = 0
-#     for f in tqdm(files):
-#         old_f = f
-#         new_f = old_f.replace(" ","")
-#         if " " in old_f:
-#             os.system(f'mv \"{old_f}\" {new_f}')
-#             print(old_f)
-#             print("Rename one")
-#             i +=1
-#     print("total: ", i)
 
 if __name__ == "__main__":
-    # rstrip_name_data(root="/home/ubuntu/vuthede/landmarkV2/300W-LP/landmarks")
-
     import torch
 
-#     transform = transforms.Compose([transforms.ToTensor(),
-#     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
+    transform = transforms.Compose([transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
-
-    # lapa = W300LargePose(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-    #             anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-    #             augment=True,
-    #             imgsize=256,
-    #         transforms=None, set_type="train")
-    # lapa_val = W300LargePose(img_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-    #         anno_dir="/home/ubuntu/vuthede/landmarkV2/300W-LP",
-    #         augment=True,
-    #             imgsize=256,
-
-    #         transforms=None, set_type="val")
-
-    # print(len(lapa))    
-    # lapa.OnSampling(num_sample=1000)
-    # print(len(lapa))    
-    # lapa.OffSampling()
-    # print(len(lapa))   
+    imgsize = 256
+    lapa = CropStyleDataSet(img_dir="/home/ubuntu/vuthede/Landmarker-Regresion-Pytorch/datasets/cropstyle",
+                anno_dir="/home/ubuntu/vuthede/Landmarker-Regresion-Pytorch/datasets/cropstyle",
+                augment=False,
+                imgsize=imgsize,
+                transforms=None, set_type="all")
     
 
-    # print(len(lapa), len(lapa_val))
+    print(len(lapa))
 
-    # for img, lmks in lapa:
-    #     img, landmarks = lapa[100]
-    #     print(img.shape, lmks.shape)
-    #     # ok =  landmarks.sahpe
-    #     for p in landmarks[36:42]:
-    #         p = p*256.0
-    #         p = p.astype(int)
+    debug_vinai_lmks = "debug_cropstyle_lmks"
+    if not os.path.isdir(debug_vinai_lmks):
+        os.makedirs(debug_vinai_lmks)
 
-    #         img = cv2.circle(img, tuple(p), 1, (255, 0, 0), 1)
-        
-    #     cv2.imwrite("300w-lp.png", img)
-    #     break
+    from tqdm import tqdm
+    i=0
+    for img, landmarks,_ in tqdm(lapa):
+        i += 1
+        print(i)
+        for p in landmarks:
+            p = p*256.0
+            p = p.astype(int)
 
-    
+            img = cv2.circle(img, tuple(p), 1, (255, 0, 0), 1)
 
-        
+        img = cv2.resize(img, (224*3,224*3))
+        # cv2.imshow("Image", img)
+        cv2.imwrite(f'{debug_vinai_lmks}/{i}.png', img)

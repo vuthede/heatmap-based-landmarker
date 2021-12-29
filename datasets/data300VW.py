@@ -20,7 +20,7 @@ category_ids = [0]
 transformerr = A.Compose(
     [
         A.ColorJitter (brightness=0.35, contrast=0.5, saturation=0.5, hue=0.2, always_apply=False, p=0.7),
-        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.3, 0.4), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.5)
+        A.ShiftScaleRotate (shift_limit_x=0.0625, shift_limit_y=(-0.2, 0.2), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.35)
         # A.ShiftScaleRotate (shift_limit_y=(0.1, 0.4), scale_limit=0.25, rotate_limit=30, interpolation=1, border_mode=4, always_apply=False, p=0.5)
        
     ], 
@@ -125,8 +125,16 @@ class VW300(data.Dataset):
         
         self.TARGET_IMAGE_SIZE = (imgsize, imgsize)
 
+        # For sampling samples
+        self.sampling_img_path_list = self.img_path_list.copy()
 
-    
+    def OnSampling(self, num_sample=20000):
+        self.sampling_img_path_list  = np.random.choice(self.img_path_list, num_sample)
+        
+    def OffSampling(self):
+        self.sampling_img_path_list = self.img_path_list.copy()
+
+
     def _get_landmarks(self, gt):
         with open(gt, "r") as f:
             lines = f.readlines()
@@ -170,7 +178,7 @@ class VW300(data.Dataset):
 
     def  __getitem__(self, index):
 
-        f = self.img_path_list[index]
+        f = self.sampling_img_path_list[index]
         self.img = cv2.imread(f)
 
         replacing_extension = ".pts"
@@ -183,7 +191,7 @@ class VW300(data.Dataset):
 
         self.box = None
         if self.box is None:
-            expand_random = random.uniform(0.1, 0.17)
+            expand_random = random.uniform(0.12, 0.4)
             self.box = self.lmks2box(self.landmark, expand_forehead=expand_random)
 
         # If fail then get the default item
@@ -247,31 +255,37 @@ class VW300(data.Dataset):
         if self.transforms is not None:
             imgT = self.transforms(imgT)  # Normalize, et
         
-        return imgT, lmks
+        return imgT, lmks, "300VW"
 
         # return None, None
 
     
 
     def __len__(self):
-        return len(self.img_path_list)
+        return len(self.sampling_img_path_list)
 
 
-# if __name__ == "__main__":
-#     import torch
+if __name__ == "__main__":
+    import torch
 
-#     transform = transforms.Compose([transforms.ToTensor(),
-#     transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
+    transform = transforms.Compose([transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])])
 
 
-#     lapa = VW300(img_dir="/vinai/devt/landmarkV2/300VW_frames",
-#                 anno_dir="/vinai/devt/landmarkV2/300VW_Dataset_2015_12_14",
-#                 augment=True,
-#                 transforms=None, set_type="train")
-    
+    lapa = VW300(img_dir="/home/ubuntu/vuthede/landmarkV2/300VW_frames",
+                anno_dir="/home/ubuntu/vuthede/landmarkV2/300VW_Dataset_2015_12_14",
+                augment=True,
+                transforms=None, set_type="train")
 
-#     lapaval = VW300(img_dir="/vinai/devt/landmarkV2/300VW_frames",
-#                 anno_dir="/vinai/devt/landmarkV2/300VW_Dataset_2015_12_14",
+    print(len(lapa))    
+    lapa.OnSampling(num_sample=1000)
+    print(len(lapa))    
+    lapa.OffSampling()
+    print(len(lapa))    
+
+
+#     lapaval = VW300(img_dir="/home/ubuntu/vuthede/landmarkV2/300VW_frames",
+#                 anno_dir="/home/ubuntu/vuthede/landmarkV2/300VW_Dataset_2015_12_14",
 #                 augment=True,
 #                 transforms=None, set_type="val")
     

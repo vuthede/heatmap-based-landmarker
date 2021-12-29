@@ -71,7 +71,7 @@ class MobileNetV2(nn.Module):
         if DEBUG:
             print(f'------------------------- \nFeatures shape mobilev2: {features.shape}\n---------------------------------')
 
-        return features
+        return features, features
 
 def mobilenetv2(pretrained=False, **kwargs):
     """Constructs a MobileNetv2 model.
